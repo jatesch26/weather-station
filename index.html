@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
+<meta name="version" content="4.1-2026-03-22">
+<!-- Weather Station v4.1 | Last updated: 2026-03-22 -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0f1117;--card:#181b23;--border:#2a2d38;--text:#e8e9ed;--dim:#6b7084;--accent:#60a5fa;--warn:#fbbf24;--danger:#f87171;--success:#4ade80;--purple:#a78bfa;--mono:'JetBrains Mono','SF Mono','Fira Code',monospace;--body:'DM Sans','Helvetica Neue',sans-serif}
@@ -126,7 +128,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 <div class="header">
   <div>
     <h1><span class="icon">◈</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector</div>
+    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.1</span></div>
   </div>
   <div class="actions">
     <span class="fetch-time" id="fetch-time"></span>
@@ -193,6 +195,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
+var VERSION="4.1-2026-03-22";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -424,7 +427,7 @@ function renderTabs(){
   document.getElementById("node-tabs").innerHTML=STATE.nodes.map(function(n){
     return'<div class="node-tab '+(n.id===STATE.activeTab?"active":"")+'" onclick="switchTab(\''+n.id+'\')"><span>'+esc(n.label)+'</span><span class="tab-role '+ROLE_CLASSES[n.role]+'">'+ROLE_LABELS[n.role]+'</span></div>'
   }).join("");
-  document.getElementById("header-sub").textContent=STATE.nodes.length+" node"+(STATE.nodes.length!==1?"s":"")+" · "+STATE.nodes.map(function(n){return n.label}).join(" → ");
+  document.getElementById("header-sub").innerHTML=STATE.nodes.length+" node"+(STATE.nodes.length!==1?"s":"")+" · "+STATE.nodes.map(function(n){return n.label}).join(" → ")+" · <span style='opacity:.5'>v"+VERSION+"</span>";
 }
 function switchTab(id){STATE.activeTab=id;renderTabs();renderActivePanel()}
 
