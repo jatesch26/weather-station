@@ -4,15 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
-<meta name="version" content="4.6-2026-03-22">
-<!-- Weather Station v4.6 | Last updated: 2026-03-22 -->
+<meta name="version" content="4.7-2026-03-22">
+<!-- Weather Station v4.7 | Last updated: 2026-03-22 -->
 <!--
-  v4.6 changes:
-  - Added console.log output for NCEI search response so the actual
-    response structure is visible in DevTools without navigating Network tab.
-  - Defensive multi-format parsing: handles results[], stations.buckets[],
-    stations[], and flat array formats.
-  - Once response format is confirmed from logs, parser can be tightened.
+  v4.7 changes:
+  - Climate normals: search service returns 400 for normals dataset specifically.
+    Workaround: use global-summary-of-the-month in Step 1 search to find station
+    ID (station IDs are shared across all NCEI datasets), then query normals in
+    Step 2 with that ID. Console logs retained for debugging.
 -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -146,7 +145,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 <div class="header">
   <div>
     <h1><span class="icon">◈</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.6</span></div>
+    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.7</span></div>
   </div>
   <div class="actions">
     <span class="fetch-time" id="fetch-time"></span>
@@ -213,7 +212,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.6-2026-03-22";
+var VERSION="4.7-2026-03-22";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -344,59 +343,54 @@ function fetchNodeUV(lat,lon){
 var NCEI_SEARCH="https://www.ncei.noaa.gov/access/services/search/v1/data";
 var NCEI_DATA="https://www.ncei.noaa.gov/access/services/data/v1";
 
-function extractStationId(d){
-  // Log the raw response so we can see the actual structure in DevTools console
-  console.log("[WeatherStation] NCEI search response:",JSON.stringify(d).slice(0,500));
-  if(!d)return null;
-
-  // Format A: {results:[{stations:[{id:"USW..."},...]},...]}
-  if(d.results&&d.results.length){
-    var r0=d.results[0];
-    if(r0.stations&&r0.stations.length)return{id:r0.stations[0].id||r0.stations[0].stationId,name:r0.stations[0].name||null};
-    if(r0.stationId)return{id:r0.stationId,name:r0.stationName||null};
-  }
-  // Format B: {stations:{buckets:[{key:"USW..."}]}} (Elasticsearch aggregation)
-  if(d.stations){
-    var st=d.stations;
-    if(st.buckets&&st.buckets.length)return{id:st.buckets[0].key,name:null};
-    if(Array.isArray(st)&&st.length)return{id:st[0].id||st[0][3]||null,name:st[0].name||null};
-  }
-  // Format C: flat array at top level [{id:"USW..."}]
-  if(Array.isArray(d)&&d.length&&d[0].id)return{id:d[0].id,name:d[0].name||null};
-  return null;
-}
-
 function fetchNodeClimate(lat,lon){
   var pad=0.75;
+  // boundingBox: N,W,S,E
   var bb=(lat+pad).toFixed(4)+","+(lon-pad).toFixed(4)+","+(lat-pad).toFixed(4)+","+(lon+pad).toFixed(4);
+
+  // Step 1: find nearest station using global-summary-of-the-month
+  // (normals dataset returns 400 on search service — station IDs are shared across datasets)
   var searchUrl=NCEI_SEARCH+
-    "?dataset=normals-monthly-1991-2020"+
-    "&dataTypes=MLY-TMAX-NORMAL"+
+    "?dataset=global-summary-of-the-month"+
+    "&dataTypes=TMAX,TMIN"+
     "&boundingBox="+bb+
     "&limit=1";
 
   return fetch(searchUrl)
-    .then(function(r){
-      console.log("[WeatherStation] NCEI search status:",r.status);
-      if(!r.ok)return null;
-      return r.json();
-    })
+    .then(function(r){if(!r.ok){console.log("[WS] NCEI search status:",r.status);return null;}return r.json();})
     .then(function(d){
-      var station=extractStationId(d);
-      console.log("[WeatherStation] Extracted station:",station);
-      if(!station||!station.id)return null;
+      if(!d)return null;
+      console.log("[WS] NCEI search raw:",JSON.stringify(d).slice(0,400));
+      var stationId=null;
+      try{
+        // Elasticsearch aggregation format: {stations:{buckets:[{key:"USW00014733"}]}}
+        if(d.stations&&d.stations.buckets&&d.stations.buckets.length){
+          stationId=d.stations.buckets[0].key;
+        // Results array format: {results:[{stationId:"USW00014733"}]}
+        } else if(d.results&&d.results.length){
+          var r0=d.results[0];
+          stationId=r0.stationId||r0.id||(r0.stations&&r0.stations.length&&(r0.stations[0].id||r0.stations[0].stationId))||null;
+        // Flat array format
+        } else if(Array.isArray(d)&&d.length){
+          stationId=d[0].id||d[0][3]||null;
+        }
+      }catch(e){}
+      console.log("[WS] Station ID:",stationId);
+      if(!stationId)return null;
 
+      // Step 2: fetch 12 monthly normals using the station ID
       var dataUrl=NCEI_DATA+
         "?dataset=normals-monthly-1991-2020"+
-        "&stations="+encodeURIComponent(station.id)+
+        "&stations="+encodeURIComponent(stationId)+
         "&dataTypes=MLY-TMAX-NORMAL,MLY-TMIN-NORMAL,MLY-PRCP-NORMAL,MLY-SNOW-NORMAL"+
         "&format=json&includeStationName=true";
 
       return fetch(dataUrl)
-        .then(function(r){if(!r.ok)return null;return r.json();})
+        .then(function(r){if(!r.ok){console.log("[WS] NCEI data status:",r.status);return null;}return r.json();})
         .then(function(rows){
           if(!rows||!rows.length)return null;
-          var stationName=station.name||rows[0].NAME||rows[0].STATION_NAME||null;
+          console.log("[WS] Normals rows:",rows.length,"first:",JSON.stringify(rows[0]).slice(0,150));
+          var stationName=rows[0].NAME||rows[0].STATION_NAME||null;
           var MABBR=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
           var MNAME=["","January","February","March","April","May","June","July","August","September","October","November","December"];
           function pf(v){return(v!=null&&v!=="")?(parseFloat(v)||null):null;}
@@ -414,17 +408,12 @@ function fetchNodeClimate(lat,lon){
           });
           months.sort(function(a,b){return a.month-b.month;});
           var cm=new Date().getMonth()+1;
-          return{
-            period:"1991–2020",
-            source:"NOAA NCEI (normals-monthly-1991-2020)",
-            station_id:station.id,
-            station_name:stationName,
-            current_month_index:cm,
-            months:months
-          };
+          return{period:"1991–2020",source:"NOAA NCEI (normals-monthly-1991-2020)",
+            station_id:stationId,station_name:stationName,
+            current_month_index:cm,months:months};
         });
     })
-    .catch(function(e){console.log("[WeatherStation] Climate fetch error:",e.message);return null;});
+    .catch(function(e){console.log("[WS] Climate error:",e.message);return null;});
 }
 
 // ─── Geocoding ──────────────────────────────────────────
