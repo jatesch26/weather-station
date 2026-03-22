@@ -4,20 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
-<meta name="version" content="4.2-2026-03-22">
-<!-- Weather Station v4.2 | Last updated: 2026-03-22 -->
+<meta name="version" content="4.3-2026-03-22">
+<!-- Weather Station v4.3 | Last updated: 2026-03-22 -->
 <!--
-  v4.2 changes:
-  - Added climate_normals to export payload: ERA5 1991–2020 normals for prev/current/next
-    month (avg high, avg low, avg monthly precip, avg monthly snow) via Open-Meteo archive
-    API. No API key required. Enables Δ Norm H / Δ Norm L columns in Gate Brief 4-Day table.
-  - Added open_meteo_daily[] to export payload: 7-day daily forecast including sunrise_iso,
-    sunset_iso, day_length_min/formatted, precip_in, snowfall_in, wind_max_mph.
-  - Added astronomy field to export payload: today's sunrise, sunset, day length — resolves
-    the "astronomy gap" noted in both project prompts. No longer labeled (derived).
-  - UI: astronomy bar added after current conditions pills. Climate normals table added
-    to each node panel. Both sourced from Open-Meteo (no extra keys, no new domains).
-  - Archive API fetches are browser-cached (not no-store) — normals don't change.
+  v4.3 changes (replaces v4.2 climate normals entirely):
+  - Climate normals source changed from Open-Meteo ERA5 archive to NOAA NCEI CDO v2 API
+    (dataset: NORMAL_MLY). Reason: ERA5 archive approach in v4.2 fetched 10,950 days of
+    raw daily data and computed annual averages, not monthly normals — values were wrong.
+  - NOAA normals are the official WMO 1991–2020 30-year averages, precomputed by NCEI.
+    One station lookup + one data fetch returns all 12 months in a tiny JSON payload.
+  - Requires a free NOAA API token (email registration at ncei.noaa.gov/cdo-web/token).
+    Token is entered once in Settings and persisted to localStorage.
+  - US locations only: NOAA normals cover US stations. Non-US nodes get climate_normals: null.
+  - Export payload climate_normals schema upgraded: all 12 months instead of prev/current/next.
+    Δ Norm columns in Gate Brief 4-Day table now use correct monthly values.
+  - v4.2 daily/astronomy fields retained unchanged.
 -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -175,7 +176,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
     <button class="btn btn-primary btn-sm" onclick="addNode()">+ Add</button>
   </div>
   <div id="geocode-status"></div>
-  <div class="hint">NWS forecast is US-only. Non-US locations get Open-Meteo data only. Climate normals (ERA5 1991–2020) available globally.</div>
+  <div class="hint">NWS forecast is US-only. Non-US locations get Open-Meteo data only. Climate normals (NOAA 1991–2020) are US-only — requires free token, see Settings below.</div>
   <div class="section-label">Active Nodes</div>
   <div class="node-list" id="node-list"></div>
   <div class="section-label">Export Options</div>
@@ -183,6 +184,15 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
     <div><label>Hourly Window</label><select id="input-hours" onchange="STATE.hourlyWindow=parseInt(this.value)"><option value="12">12 hours</option><option value="24" selected>24 hours</option><option value="48">48 hours</option><option value="72">72 hours</option></select></div>
     <div><label>Include AFD</label><select id="input-afd" onchange="STATE.afdMode=this.value"><option value="full" selected>Full text</option><option value="summary">Summary (2000 chars)</option><option value="none">None</option></select></div>
   </div>
+  <div class="section-label">NOAA API Token (Climate Normals)</div>
+  <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+    <div style="flex:1">
+      <label>Token — free from <a href="https://www.ncei.noaa.gov/cdo-web/token" target="_blank" style="color:var(--accent)">ncei.noaa.gov/cdo-web/token</a></label>
+      <input id="input-noaa-token" type="password" placeholder="Paste token here" style="width:100%;min-width:260px" oninput="saveNoaaToken()">
+    </div>
+    <div id="token-status" style="font-size:11px;font-family:var(--mono);padding-bottom:8px;color:var(--dim)"></div>
+  </div>
+  <div class="hint">US locations only. Register with your email — token arrives instantly. Stored in localStorage, never leaves your browser.</div>
   <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">
     <button class="btn btn-primary" onclick="fetchAllNodes();document.getElementById('settings-panel').classList.remove('open')" style="padding:8px 20px;font-size:13px">⟳ Apply & Re-fetch All</button>
     <span style="font-size:11px;color:var(--dim);font-family:var(--mono)">Re-fetches all nodes with current settings</span>
@@ -218,7 +228,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.2-2026-03-22";
+var VERSION="4.3-2026-03-22";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -228,7 +238,19 @@ var PRESETS=[
 ];
 var ROLE_LABELS={home_base:"Home Base",destination:"Destination",connection:"Connection",run_location:"Run Location"};
 var ROLE_CLASSES={home_base:"role-home",destination:"role-dest",connection:"role-conn",run_location:"role-run"};
-var STATE={nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",nws:null,uv:null,climate:null,errors:[],status:"idle"}],hourlyWindow:24,afdMode:"full",fetchTime:null,activeTab:"n0",nextId:1};
+var STATE={nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",nws:null,uv:null,climate:null,errors:[],status:"idle"}],hourlyWindow:24,afdMode:"full",fetchTime:null,activeTab:"n0",nextId:1,noaaToken:""};
+
+// ─── Token persistence ───────────────────────────────────
+function saveNoaaToken(){
+  var t=document.getElementById("input-noaa-token").value.trim();
+  STATE.noaaToken=t;
+  try{localStorage.setItem("noaaToken",t)}catch(e){}
+  var el=document.getElementById("token-status");
+  if(el)el.textContent=t?"✓ Saved":"";
+}
+function loadNoaaToken(){
+  try{var t=localStorage.getItem("noaaToken");if(t){STATE.noaaToken=t;var el=document.getElementById("input-noaa-token");if(el)el.value=t;var st=document.getElementById("token-status");if(st)st.textContent="✓ Saved"}}catch(e){}
+}
 
 // ─── Helpers ────────────────────────────────────────────
 function ts(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true,timeZoneName:"short"})}
@@ -241,16 +263,7 @@ function paToInHg(p){return p!=null?Math.round(p/3386.39*100)/100:null}
 function vv(x){return x!=null&&x!==undefined?x:"—"}
 function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
 function pad2(n){return String(n).padStart(2,"0")}
-function getDaysInMonth(year,month){return new Date(year,month,0).getDate()}
 function fmtTimeShort(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{hour:"numeric",minute:"2-digit",hour12:true})}
-function monthAbbr(m){return["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][m-1]}
-function monthName(m){return["January","February","March","April","May","June","July","August","September","October","November","December"][m-1]}
-function getSeason(jsMonth){
-  if(jsMonth>=2&&jsMonth<=4)return{name:"Spring",context:jsMonth===2?"Early Spring":jsMonth===3?"Mid-Spring":"Late Spring"};
-  if(jsMonth>=5&&jsMonth<=7)return{name:"Summer",context:jsMonth===5?"Early Summer":jsMonth===6?"Mid-Summer":"Late Summer"};
-  if(jsMonth>=8&&jsMonth<=10)return{name:"Fall",context:jsMonth===8?"Early Fall":jsMonth===9?"Mid-Fall":"Late Fall"};
-  return{name:"Winter",context:jsMonth===11?"Early Winter":jsMonth===0?"Mid-Winter":"Late Winter"};
-}
 
 // ─── SVG Charts ─────────────────────────────────────────
 function sparkSvg(values,opts){
@@ -351,89 +364,61 @@ function fetchNodeUV(lat,lon){
   return fetch("https://api.open-meteo.com/v1/forecast?"+params,{cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("Open-Meteo "+r.status);return r.json()});
 }
 
-// ─── Climate Normals (ERA5 1991–2020) ───────────────────
-// Fetches a single month's daily data across the 1991–2020 normal period
-// and returns mean daily high, low, monthly precip, and monthly snow.
-// Browser-cached (no cache:no-store) since normals don't change.
-function fetchMonthNormals(lat,lon,month){
-  var startYear=1991,endYear=2020;
-  var start=startYear+"-"+pad2(month)+"-01";
-  var end=endYear+"-"+pad2(month)+"-"+pad2(getDaysInMonth(endYear,month));
-  var params=new URLSearchParams({
-    latitude:lat,longitude:lon,
-    start_date:start,end_date:end,
-    daily:"temperature_2m_max,temperature_2m_min,precipitation_sum,snowfall_sum",
-    temperature_unit:"fahrenheit",
-    precipitation_unit:"inch",
-    timezone:"UTC"
-  });
-  return fetch("https://archive-api.open-meteo.com/v1/archive?"+params)
-    .then(function(r){if(!r.ok)throw new Error("Archive "+r.status);return r.json()})
-    .then(function(data){
-      var highs=data.daily&&data.daily.temperature_2m_max||[];
-      var lows=data.daily&&data.daily.temperature_2m_min||[];
-      var precips=data.daily&&data.daily.precipitation_sum||[];
-      var snows=data.daily&&data.daily.snowfall_sum||[];
-      // Check units from response and convert if needed
-      var units=data.daily_units||{};
-      var precipUnit=units.precipitation_sum||"mm";
-      var snowUnit=units.snowfall_sum||"cm";
-      function toInches(val,unit){
-        if(val==null)return null;
-        if(unit==="inch"||unit==="in")return val;
-        if(unit==="mm")return val*0.03937;
-        if(unit==="cm")return val*0.3937;
-        return val;
-      }
-      precips=precips.map(function(v){return toInches(v,precipUnit)});
-      snows=snows.map(function(v){return toInches(v,snowUnit)});
-      function mean(arr){
-        var v=arr.filter(function(x){return x!=null&&!isNaN(x)});
-        if(!v.length)return null;
-        return Math.round(v.reduce(function(a,b){return a+b},0)/v.length*10)/10;
-      }
-      // Monthly totals: sum all daily values per year, then average across years
-      var years=endYear-startYear+1;
-      function monthlyAvg(arr){
-        var v=arr.filter(function(x){return x!=null&&!isNaN(x)});
-        if(!v.length)return null;
-        return Math.round(v.reduce(function(a,b){return a+b},0)/years*100)/100;
-      }
-      return{
-        month:month,
-        month_abbr:monthAbbr(month),
-        month_name:monthName(month),
-        normal_high_f:mean(highs),
-        normal_low_f:mean(lows),
-        normal_precip_in:monthlyAvg(precips),
-        normal_snow_in:monthlyAvg(snows),
-        sample_years:years,
-        period:startYear+"–"+endYear
-      };
+// ─── Climate Normals — NOAA CDO v2 ──────────────────────
+// Two calls per location:
+//   1. /stations  — find nearest NORMAL_MLY station within 0.75° box
+//   2. /data      — fetch all 12 monthly normals for that station
+// Requires free token from ncei.noaa.gov/cdo-web/token
+// US locations only — returns null for non-US without erroring.
+var CDO_BASE="https://www.ncei.noaa.gov/cdo-web/api/v2";
+function cdoFetch(path,token){
+  return fetch(CDO_BASE+path,{headers:{"token":token}})
+    .then(function(r){
+      if(r.status===400||r.status===404)return null;
+      if(!r.ok)throw new Error("CDO "+r.status);
+      return r.json();
     });
 }
-
-function fetchNodeClimate(lat,lon){
-  var now=new Date();
-  var cm=now.getMonth()+1;
-  var pm=cm===1?12:cm-1;
-  var nm=cm===12?1:cm+1;
-  var season=getSeason(now.getMonth());
-  return Promise.all([
-    fetchMonthNormals(lat,lon,pm).catch(function(){return null}),
-    fetchMonthNormals(lat,lon,cm).catch(function(){return null}),
-    fetchMonthNormals(lat,lon,nm).catch(function(){return null})
-  ]).then(function(results){
-    return{
-      period:"1991–2020",
-      source:"Open-Meteo ERA5 archive",
-      season:season.name,
-      season_context:season.context,
-      prev_month:results[0],
-      current_month:results[1],
-      next_month:results[2]
-    };
-  });
+function fetchNodeClimate(lat,lon,token){
+  if(!token)return Promise.resolve(null);
+  var ext=[lat-0.75,lon-0.75,lat+0.75,lon+0.75].join(",");
+  return cdoFetch("/stations?datasetid=NORMAL_MLY&extent="+ext+"&limit=5&sortfield=name",token)
+    .then(function(d){
+      if(!d||!d.results||!d.results.length)return null;
+      var stationId=d.results[0].id;
+      var stationName=d.results[0].name;
+      var path="/data?datasetid=NORMAL_MLY&stationid="+encodeURIComponent(stationId)+
+        "&datatypeid=MLY-TMAX-NORMAL,MLY-TMIN-NORMAL,MLY-PRCP-NORMAL,MLY-SNOW-NORMAL"+
+        "&startdate=2010-01-01&enddate=2010-12-01&units=standard&limit=50";
+      return cdoFetch(path,token).then(function(nd){
+        if(!nd||!nd.results||!nd.results.length)return null;
+        var byMonth={};
+        nd.results.forEach(function(row){
+          var m=parseInt(row.date.slice(5,7),10);
+          if(!byMonth[m])byMonth[m]={};
+          var key=row.datatype.replace("MLY-","").replace("-NORMAL","");
+          byMonth[m][key]=row.value;
+        });
+        var MABBR=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+        var MNAME=["","January","February","March","April","May","June","July","August","September","October","November","December"];
+        var months=[];
+        for(var m=1;m<=12;m++){
+          var mo=byMonth[m]||{};
+          months.push({
+            month:m,month_abbr:MABBR[m],month_name:MNAME[m],
+            normal_high_f:mo.TMAX!=null?Math.round(mo.TMAX*10)/10:null,
+            normal_low_f:mo.TMIN!=null?Math.round(mo.TMIN*10)/10:null,
+            normal_precip_in:mo.PRCP!=null?Math.round(mo.PRCP*100)/100:null,
+            normal_snow_in:mo.SNOW!=null?Math.round(mo.SNOW*10)/10:null
+          });
+        }
+        var cm=new Date().getMonth()+1;
+        return{period:"1991–2020",source:"NOAA NCEI Climate Normals (NORMAL_MLY)",
+          station_id:stationId,station_name:stationName,
+          current_month_index:cm,months:months};
+      });
+    })
+    .catch(function(){return null});
 }
 
 // ─── Geocoding ──────────────────────────────────────────
@@ -480,7 +465,7 @@ function fetchSingleNode(node){
   node.status="loading";node.errors=[];node.climate=null;renderNodeList();renderTabs();
   var nwsP=fetchNodeNWS(node.lat,node.lon).then(function(d){node.nws=d}).catch(function(e){node.errors.push("NWS: "+e.message);node.nws=null});
   var uvP=fetchNodeUV(node.lat,node.lon).then(function(d){node.uv=d}).catch(function(e){node.errors.push("Open-Meteo: "+e.message);node.uv=null});
-  var climateP=fetchNodeClimate(node.lat,node.lon).then(function(d){node.climate=d}).catch(function(e){node.errors.push("Climate normals: "+e.message);node.climate=null});
+  var climateP=fetchNodeClimate(node.lat,node.lon,STATE.noaaToken).then(function(d){node.climate=d}).catch(function(e){node.climate=null});
   return Promise.all([nwsP,uvP,climateP]).then(function(){
     node.status=(node.nws||node.uv)?"ready":"error";
     renderNodeList();renderTabs();renderActivePanel();updateActionBar();
@@ -594,11 +579,11 @@ function buildExportPayload(){
         seven_day_forecast:nws?nws.forecastUpdated:null,
         afd:nws?nws.afdTime:null,
         open_meteo:now.toISOString(),
-        climate_normals:node.climate?"ERA5 1991–2020 (static)":null
+        climate_normals:node.climate?"NOAA NCEI 1991–2020 (static, station: "+(node.climate.station_id||"?")+" "+( node.climate.station_name||"")+" )":null
       }
     };
   });
-  return{_format:"weather-station-export-v2",_generated:now.toISOString(),_note:"Paste this entire block into your Claude weather briefing project. Includes climate normals (ERA5 1991–2020) and astronomical data.",_node_count:nodes.length,nodes:nodes};
+  return{_format:"weather-station-export-v2",_generated:now.toISOString(),_note:"Paste this entire block into your Claude weather briefing project. Includes NOAA 1991-2020 climate normals (all 12 months) and astronomical data.",_node_count:nodes.length,nodes:nodes};
 }
 
 function getExportText(){
@@ -717,24 +702,31 @@ function renderActivePanel(){
     html+='<div style="margin-top:16px"><div class="section-header"><h2>7-Day</h2><span class="badge badge-fresh">'+ago(nws.forecastUpdated)+'</span></div>';
     if(dayHighs.filter(function(v){return v!=null}).length>1){
       html+='<div class="chart-container"><h3>High / Low Range';
-      // ── NEW: Δ Normal annotation in chart header ──
-      if(node.climate&&node.climate.current_month){
-        var cn=node.climate.current_month;
-        html+=' <span style="color:var(--dim);font-weight:400"> · Normal: High '+cn.normal_high_f+'° / Low '+cn.normal_low_f+'° ('+cn.month_abbr+')</span>';
+      // Δ Normal annotation in chart header — look up current month from months[]
+      if(node.climate&&node.climate.months){
+        var nowMIdx=new Date().getMonth()+1;
+        var cnArr=node.climate.months[nowMIdx-1];
+        if(cnArr&&cnArr.normal_high_f!=null){
+          html+=' <span style="color:var(--dim);font-weight:400"> · Normal: High '+cnArr.normal_high_f+'° / Low '+cnArr.normal_low_f+'° ('+cnArr.month_abbr+')</span>';
+        }
       }
       html+='</h3>'+barChart(dayLabels,dayHighs,dayLows)+'</div>';
     }
     html+='<div class="forecast-rows" style="margin-top:8px">';
     for(var fj=0;fj<nws.forecast.length;fj++){
       var fp=nws.forecast[fj],prec=fp.probabilityOfPrecipitation?fp.probabilityOfPrecipitation.value:0;
-      // Δ Normal delta
+      // Δ Normal delta — look up current month from months[]
       var deltaStr="";
-      if(node.climate&&node.climate.current_month){
-        var normRef=fp.isDaytime!==false?node.climate.current_month.normal_high_f:node.climate.current_month.normal_low_f;
-        if(normRef!=null&&fp.temperature!=null){
-          var delta=Math.round(fp.temperature-normRef);
-          var dColor=delta>0?"var(--danger)":delta<0?"var(--accent)":"var(--dim)";
-          deltaStr='<span style="font-size:11px;color:'+dColor+';font-family:var(--mono);flex-shrink:0;width:44px;text-align:right">'+(delta>0?"+":"")+delta+'°Δ</span>';
+      if(node.climate&&node.climate.months){
+        var nowM=new Date().getMonth()+1;
+        var normMonth=node.climate.months[nowM-1];
+        if(normMonth){
+          var normRef=fp.isDaytime!==false?normMonth.normal_high_f:normMonth.normal_low_f;
+          if(normRef!=null&&fp.temperature!=null){
+            var delta=Math.round(fp.temperature-normRef);
+            var dColor=delta>0?"var(--danger)":delta<0?"var(--accent)":"var(--dim)";
+            deltaStr='<span style="font-size:11px;color:'+dColor+';font-family:var(--mono);flex-shrink:0;width:44px;text-align:right">'+(delta>0?"+":"")+delta+'°Δ</span>';
+          }
         }
       }
       html+='<div class="forecast-row"><div class="name">'+esc(fp.name)+'</div><div class="temp">'+fp.temperature+'°<span class="unit">'+fp.temperatureUnit+'</span></div><div class="fwind">'+fp.windSpeed+' '+fp.windDirection+'</div>'+deltaStr+(prec>0?'<span class="badge badge-precip">💧'+prec+'%</span>':'')+'<div class="short">'+esc(fp.shortForecast)+'</div></div>';
@@ -748,27 +740,23 @@ function renderActivePanel(){
     html+='<div style="margin-top:16px"><button class="afd-toggle" onclick="var el=document.getElementById(\''+afdId+'\');el.classList.toggle(\'open\');this.querySelector(\'h2\').textContent=(el.classList.contains(\'open\')?\'▾\':\'▸\')+\' AFD — '+esc(nws.office)+'\'"><h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ AFD — '+esc(nws.office)+'</h2><span class="badge badge-fresh">'+ago(nws.afdTime)+'</span></button><pre class="afd-text" id="'+afdId+'">'+esc(nws.afd)+'</pre></div>';
   }
 
-  // ── NEW: Climate Normals section ─────────────────────
-  if(node.climate){
+  // ── Climate Normals section ──────────────────────────
+  if(node.climate&&node.climate.months){
     var cl=node.climate;
+    var nowMonth=new Date().getMonth()+1;
     html+='<div style="margin-top:16px">';
     html+='<div class="section-header">';
     html+='<h2>Climate Normals</h2>';
     html+='<span class="badge" style="background:#a78bfa22;color:var(--purple)">'+esc(cl.period)+'</span>';
-    html+='<span class="meta" style="margin-left:4px">'+esc(cl.season_context)+'</span>';
+    html+='<span class="meta" style="margin-left:4px">'+esc(cl.station_name||cl.station_id||"")+'</span>';
     html+='</div>';
     html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px">';
     html+='<table class="climate-table">';
-    html+='<thead><tr>';
-    html+='<th>Month</th><th>Avg High</th><th>Avg Low</th><th>Avg Precip</th><th>Avg Snow</th>';
-    html+='</tr></thead><tbody>';
-    var nowMonth=new Date().getMonth()+1;
-    [cl.prev_month,cl.current_month,cl.next_month].forEach(function(m){
-      if(!m)return;
+    html+='<thead><tr><th>Month</th><th>Avg High</th><th>Avg Low</th><th>Avg Precip</th><th>Avg Snow</th></tr></thead><tbody>';
+    cl.months.forEach(function(m){
       var isCur=(m.month===nowMonth);
-      var rowClass=isCur?"current-month":"dim-month";
-      html+='<tr class="'+rowClass+'">';
-      html+='<td style="font-weight:'+(isCur?"700":"400")+';">';
+      html+='<tr class="'+(isCur?"current-month":"dim-month")+'">';
+      html+='<td style="font-weight:'+(isCur?"700":"400")+'">';
       if(isCur)html+='<span style="color:var(--accent)">→ </span>';
       html+=esc(m.month_abbr);
       if(isCur)html+=' <span style="color:var(--dim);font-size:10px;font-weight:400">(now)</span>';
@@ -780,10 +768,12 @@ function renderActivePanel(){
       html+='</tr>';
     });
     html+='</tbody></table>';
-    html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">'+esc(cl.source)+' · monthly means across '+esc(cl.period)+'</div>';
+    html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">'+esc(cl.source)+' · '+esc(cl.station_id||"")+'</div>';
     html+='</div></div>';
   } else if(node.status==="loading"){
     html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)"><span class="spinner"></span> Loading climate normals…</div>';
+  } else if(!STATE.noaaToken){
+    html+='<div style="margin-top:12px;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 14px;font-size:12px;font-family:var(--mono);color:var(--dim)">⚠ Climate normals unavailable — add a free NOAA token in ⚙ Settings. Register at <a href="https://www.ncei.noaa.gov/cdo-web/token" target="_blank" style="color:var(--accent)">ncei.noaa.gov/cdo-web/token</a>.</div>';
   }
 
   // Sources
@@ -798,8 +788,8 @@ function renderActivePanel(){
     srcRow(nws&&!!nws.afd,"AFD",nws&&nws.afdTime?ts(nws.afdTime)+" ("+ago(nws.afdTime)+")":"unavailable",nws&&nws.office?" · "+nws.office:"")+
     srcRow(sUV!=null,"Open-Meteo UV",sUV!=null?"UV "+Math.round(sUV*10)/10:"unavailable")+
     srcRow(hasAstro,"Astronomy (daily)","Sunrise/sunset · 7-day · Open-Meteo")+
-    srcRow(!!node.climate,"Climate Normals",node.climate?"ERA5 "+node.climate.period+" · "+node.climate.season_context:"unavailable")+
-    '<div class="footer">Live → api.weather.gov + api.open-meteo.com · Climate → archive-api.open-meteo.com (ERA5 1991–2020, cached) · No keys</div></div>';
+    srcRow(!!node.climate,"Climate Normals",node.climate?"NOAA NCEI "+node.climate.period+" · "+node.climate.station_id+(node.climate.station_name?" · "+node.climate.station_name:""):(!STATE.noaaToken?"no token — see ⚙ Settings":"unavailable"))+
+    '<div class="footer">Live → api.weather.gov + api.open-meteo.com · Climate → NOAA NCEI CDO v2 (normals-monthly-1991-2020) · Free token required</div></div>';
 
   panel.innerHTML=html;
 }
@@ -812,6 +802,7 @@ document.getElementById("input-location").addEventListener("keydown",function(e)
 
 // ─── Init ───────────────────────────────────────────────
 document.getElementById("presets").innerHTML=PRESETS.map(function(p,i){return'<button class="preset-btn" onclick="addPreset('+i+')">'+esc(p.label)+' <span style="opacity:.5;font-size:10px">('+ROLE_LABELS[p.role]+')</span></button>'}).join("");
+loadNoaaToken();
 renderNodeList();renderTabs();fetchAllNodes();
 </script>
 </body>
