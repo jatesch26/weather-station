@@ -4,19 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
-<meta name="version" content="4.4-2026-03-22">
-<!-- Weather Station v4.4 | Last updated: 2026-03-22 -->
+<meta name="version" content="4.5-2026-03-22">
+<!-- Weather Station v4.5 | Last updated: 2026-03-22 -->
 <!--
-  v4.4 changes:
-  - Climate normals now use NOAA NCEI Access Data Service (access/services/data/v1),
-    replacing the CDO v2 endpoint used in v4.3. CDO v2 failed CORS preflight from
-    GitHub Pages due to its custom token header. The new endpoint is a plain GET with
-    no custom headers — confirmed CORS-safe from browser/GitHub Pages (STATUS: 200).
-  - No token required. No registration. Works for any US location added by the user.
-  - Single fetch call per node (was two in v4.3). bbox parameter selects nearest
-    station; first station's 12 monthly rows are parsed directly from JSON array.
-  - Non-US locations return climate_normals: null gracefully (no NOAA station coverage).
-  - Token UI removed from Settings entirely.
+  v4.5 changes:
+  - Fixed 400 Bad Request on climate normals fetch. The data service
+    (access/services/data/v1) returns 400 when using bbox= for the
+    normals-monthly-1991-2020 dataset — stations= is required.
+  - Replaced single bbox call with two-step: (1) search service
+    (access/services/search/v1/data) with boundingBox to find nearest
+    station ID, (2) data service with stations= to fetch 12 monthly rows.
+  - Both calls remain plain GETs, no token, no custom headers — CORS-safe.
 -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -150,7 +148,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 <div class="header">
   <div>
     <h1><span class="icon">◈</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.4</span></div>
+    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.5</span></div>
   </div>
   <div class="actions">
     <span class="fetch-time" id="fetch-time"></span>
@@ -217,7 +215,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.4-2026-03-22";
+var VERSION="4.5-2026-03-22";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -341,54 +339,83 @@ function fetchNodeUV(lat,lon){
   return fetch("https://api.open-meteo.com/v1/forecast?"+params,{cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("Open-Meteo "+r.status);return r.json()});
 }
 
-// ─── Climate Normals — NOAA NCEI Access Data Service ────
-// Single plain GET — no token, no custom headers, CORS-safe from GitHub Pages.
-// bbox selects nearest station(s); we take the first station's 12 monthly rows.
-// US locations only — non-US returns empty array → null, degrades silently.
-// Confirmed working: STATUS 200 from jatesch26.github.io (2026-03-22).
+// ─── Climate Normals — NOAA NCEI two-step ───────────────
+// Step 1: search service (boundingBox) → get nearest station ID
+// Step 2: data service (stations=ID) → get all 12 monthly normals
+// Both plain GETs, no token, no custom headers — CORS-safe from GitHub Pages.
+// The bbox single-call approach returns 400 for the normals dataset (stations=
+// is required). Search service confirmed CORS-safe; uses boundingBox not bbox.
+// US locations only — non-US returns null gracefully.
+var NCEI_SEARCH="https://www.ncei.noaa.gov/access/services/search/v1/data";
+var NCEI_DATA="https://www.ncei.noaa.gov/access/services/data/v1";
+
 function fetchNodeClimate(lat,lon){
   var pad=0.75;
-  // bbox format required by NCEI: N,W,S,E
-  var bbox=(lat+pad).toFixed(4)+","+(lon-pad).toFixed(4)+","+(lat-pad).toFixed(4)+","+(lon+pad).toFixed(4);
-  var url="https://www.ncei.noaa.gov/access/services/data/v1"+
+  // Search service uses boundingBox: N,W,S,E
+  var bb=(lat+pad).toFixed(4)+","+(lon-pad).toFixed(4)+","+(lat-pad).toFixed(4)+","+(lon+pad).toFixed(4);
+  var searchUrl=NCEI_SEARCH+
     "?dataset=normals-monthly-1991-2020"+
-    "&dataTypes=MLY-TMAX-NORMAL,MLY-TMIN-NORMAL,MLY-PRCP-NORMAL,MLY-SNOW-NORMAL"+
-    "&bbox="+bbox+"&format=json&includeStationName=true";
-  return fetch(url)
+    "&dataTypes=MLY-TMAX-NORMAL"+
+    "&boundingBox="+bb+
+    "&limit=1";
+
+  return fetch(searchUrl)
     .then(function(r){if(!r.ok)return null;return r.json();})
-    .then(function(rows){
-      if(!rows||!rows.length)return null;
-      // Keep only the first station's rows (bbox may return multiple stations)
-      var firstStation=rows[0].STATION;
-      var stRows=rows.filter(function(r){return r.STATION===firstStation;});
-      if(!stRows.length)return null;
-      var MABBR=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-      var MNAME=["","January","February","March","April","May","June","July","August","September","October","November","December"];
-      function pf(v){return(v!=null&&v!=="")?(parseFloat(v)||null):null;}
-      function r1(v){return v!=null?Math.round(v*10)/10:null;}
-      function r2(v){return v!=null?Math.round(v*100)/100:null;}
-      var months=stRows.map(function(row){
-        var m=parseInt(row.DATE,10);
-        return{
-          month:m,month_abbr:MABBR[m]||"",month_name:MNAME[m]||"",
-          normal_high_f:r1(pf(row["MLY-TMAX-NORMAL"])),
-          normal_low_f:r1(pf(row["MLY-TMIN-NORMAL"])),
-          normal_precip_in:r2(pf(row["MLY-PRCP-NORMAL"])),
-          normal_snow_in:r1(pf(row["MLY-SNOW-NORMAL"]))
-        };
-      });
-      months.sort(function(a,b){return a.month-b.month;});
-      // Station name may come back as NAME or STATION_NAME depending on API version
-      var stationName=rows[0].NAME||rows[0].STATION_NAME||null;
-      var cm=new Date().getMonth()+1;
-      return{
-        period:"1991–2020",
-        source:"NOAA NCEI (normals-monthly-1991-2020)",
-        station_id:firstStation,
-        station_name:stationName,
-        current_month_index:cm,
-        months:months
-      };
+    .then(function(d){
+      // Search response: {results:[{stations:[{id:"USW00014733",name:"..."},...]},...]}
+      var stationId=null,stationName=null;
+      if(d&&d.results&&d.results.length){
+        var first=d.results[0];
+        // Station id may be at results[].stations[].id or results[].stationId
+        if(first.stations&&first.stations.length){
+          stationId=first.stations[0].id||first.stations[0].stationId||null;
+          stationName=first.stations[0].name||null;
+        } else if(first.stationId){
+          stationId=first.stationId;
+          stationName=first.stationName||null;
+        }
+      }
+      if(!stationId)return null;
+
+      // Step 2: fetch all 12 monthly normals for this station
+      var dataUrl=NCEI_DATA+
+        "?dataset=normals-monthly-1991-2020"+
+        "&stations="+encodeURIComponent(stationId)+
+        "&dataTypes=MLY-TMAX-NORMAL,MLY-TMIN-NORMAL,MLY-PRCP-NORMAL,MLY-SNOW-NORMAL"+
+        "&format=json&includeStationName=true";
+
+      return fetch(dataUrl)
+        .then(function(r){if(!r.ok)return null;return r.json();})
+        .then(function(rows){
+          if(!rows||!rows.length)return null;
+          // Use NAME from data response if search didn't give us one
+          if(!stationName)stationName=rows[0].NAME||rows[0].STATION_NAME||null;
+          var MABBR=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          var MNAME=["","January","February","March","April","May","June","July","August","September","October","November","December"];
+          function pf(v){return(v!=null&&v!=="")?(parseFloat(v)||null):null;}
+          function r1(v){return v!=null?Math.round(v*10)/10:null;}
+          function r2(v){return v!=null?Math.round(v*100)/100:null;}
+          var months=rows.map(function(row){
+            var m=parseInt(row.DATE,10);
+            return{
+              month:m,month_abbr:MABBR[m]||"",month_name:MNAME[m]||"",
+              normal_high_f:r1(pf(row["MLY-TMAX-NORMAL"])),
+              normal_low_f:r1(pf(row["MLY-TMIN-NORMAL"])),
+              normal_precip_in:r2(pf(row["MLY-PRCP-NORMAL"])),
+              normal_snow_in:r1(pf(row["MLY-SNOW-NORMAL"]))
+            };
+          });
+          months.sort(function(a,b){return a.month-b.month;});
+          var cm=new Date().getMonth()+1;
+          return{
+            period:"1991–2020",
+            source:"NOAA NCEI (normals-monthly-1991-2020)",
+            station_id:stationId,
+            station_name:stationName,
+            current_month_index:cm,
+            months:months
+          };
+        });
     })
     .catch(function(){return null;});
 }
