@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
-<meta name="version" content="4.9b-2026-03-22">
+<meta name="version" content="4.9-2026-03-22">
 <!-- Weather Station v4.7 | Last updated: 2026-03-22 -->
 <!--
   v4.7 changes:
@@ -145,7 +145,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 <div class="header">
   <div>
     <h1><span class="icon">◈</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.9</span></div>
+    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.10</span></div>
   </div>
   <div class="actions">
     <span class="fetch-time" id="fetch-time"></span>
@@ -212,7 +212,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.9-2026-03-23";
+var VERSION="4.10-2026-03-23";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -457,7 +457,24 @@ function buildExportPayload(){
     var nws=node.nws,uv=node.uv,obs=nws?nws.observation:null;
     // Current observations
     var currentObs=null;
-    if(obs){currentObs={timestamp:obs.timestamp,temperature_f:cToF(obs.temperature?obs.temperature.value:null),dewpoint_f:cToF(obs.dewpoint?obs.dewpoint.value:null),humidity_pct:obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,wind_speed_mph:mpsToMph(obs.windSpeed?obs.windSpeed.value:null),wind_direction:compass(obs.windDirection?obs.windDirection.value:null),wind_direction_deg:obs.windDirection?obs.windDirection.value:null,wind_gust_mph:mpsToMph(obs.windGust?obs.windGust.value:null),visibility_mi:mToMi(obs.visibility?obs.visibility.value:null),pressure_inhg:paToInHg(obs.barometricPressure?obs.barometricPressure.value:null),sky:obs.textDescription,raw_metar:obs.rawMessage}}
+    if(obs){
+      // Empty raw_metar = QC-rejected obs; wind values unreliable — null them so prompts use hourly fallback
+      var metar=obs.rawMessage||"";
+      var windOk=metar.length>0;
+      currentObs={
+        timestamp:obs.timestamp,
+        temperature_f:cToF(obs.temperature?obs.temperature.value:null),
+        dewpoint_f:cToF(obs.dewpoint?obs.dewpoint.value:null),
+        humidity_pct:obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,
+        wind_speed_mph:windOk?mpsToMph(obs.windSpeed?obs.windSpeed.value:null):null,
+        wind_direction:windOk?compass(obs.windDirection?obs.windDirection.value:null):"—",
+        wind_direction_deg:windOk?(obs.windDirection?obs.windDirection.value:null):null,
+        wind_gust_mph:windOk?mpsToMph(obs.windGust?obs.windGust.value:null):null,
+        visibility_mi:mToMi(obs.visibility?obs.visibility.value:null),
+        pressure_inhg:paToInHg(obs.barometricPressure?obs.barometricPressure.value:null),
+        sky:obs.textDescription,
+        raw_metar:metar
+      };}
     // Current UV
     var currentUV=null;
     if(uv&&uv.hourly){var nowH=now.toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){currentUV=uv.hourly.uv_index[ui];break}}}
