@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
-<meta name="version" content="4.9-2026-03-22">
+<meta name="version" content="4.9b-2026-03-22">
 <!-- Weather Station v4.7 | Last updated: 2026-03-22 -->
 <!--
   v4.7 changes:
@@ -212,7 +212,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.9-2026-03-22";
+var VERSION="4.9-2026-03-23";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -350,7 +350,9 @@ function fetchNodeClimate(lat,lon){
       if(!d||d.error||!d.results||!d.results.length)return null;
       var MABBR=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
       var MNAME=["","January","February","March","April","May","June","July","August","September","October","November","December"];
-      function pf(v){return(v!=null&&v!=="")?(parseFloat(v)||null):null;}
+      // NOAA sentinels: -777.7=trace/N/A, -999/-9999=missing — treat all as null
+      function isSentinel(v){return v!=null&&(v===-777.7||v===-777||v===-999||v===-9999||v<-100);}
+      function pf(v){if(v==null||v==="")return null;var n=parseFloat(v);return(isNaN(n)||isSentinel(n))?null:n;}
       function r1(v){return v!=null?Math.round(v*10)/10:null;}
       function r2(v){return v!=null?Math.round(v*100)/100:null;}
       // Group results by month
