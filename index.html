@@ -4,14 +4,40 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
-<meta name="version" content="4.9-2026-03-22">
-<!-- Weather Station v4.7 | Last updated: 2026-03-22 -->
+<meta name="version" content="4.13-2026-03-29">
+<!-- Weather Station v4.13 | Last updated: 2026-03-29 -->
 <!--
-  v4.7 changes:
-  - Climate normals: search service returns 400 for normals dataset specifically.
-    Workaround: use global-summary-of-the-month in Step 1 search to find station
-    ID (station IDs are shared across all NCEI datasets), then query normals in
-    Step 2 with that ID. Console logs retained for debugging.
+  v4.13 changes:
+  - Climate normals source replaced entirely. Cloudflare Worker + NCEI CDO v2
+    removed. New source: Open-Meteo Historical Archive API (ERA5 reanalysis,
+    archive-api.open-meteo.com). No token, no CORS issues, direct browser fetch.
+  - fetchNodeClimate now fetches 10 years of daily highs/lows/precip (2015–2024)
+    and computes normals locally in JS — no server-side proxy needed.
+  - Monthly normals (for climate table): simple monthly averages across 10 years.
+    Monthly precip is sum-per-month averaged across years (correct methodology).
+  - today_window: 7-day rolling window centered on today's date (±3 days),
+    ~80 data points. Used for delta normal in 7-day forecast rows — more accurate
+    than monthly bucket at season transitions.
+  - Forecast delta normal column now uses today_window.normal_high_f /
+    normal_low_f when available, falling back to monthly normal.
+  - TIMEOUT_CLIMATE bumped to 20s (larger response than worker, still fast).
+  - Source attribution updated throughout: "ERA5 2015-2024" replaces "NOAA NCEI".
+  - CLIMATE_WORKER constant removed.
+
+  v4.12 changes:
+  - Root cause of "slow/frozen" behavior: no fetch timeouts anywhere in codebase.
+    NWS API (api.weather.gov) intermittently accepts connections but never resolves
+    them. Without AbortController timeouts, one stalled request hangs the entire
+    fetch chain indefinitely.
+  - Added fetchWithTimeout() wrapper (default 12s, configurable) using AbortController.
+    Applied to: nwsFetch, fetchNodeUV, fetchNodeClimate, resolveLocation.
+  - AFD fetch given a tighter 10s timeout (two chained requests, slow even on good days).
+  - NWS observation fetch given 8s timeout (single METAR, should be fast).
+  - fetchNodeNWS now catches per-subrequest so a stalled AFD or obs doesn't block
+    forecast data from rendering.
+  - Added per-node timeout display in source rows (shows "timed out" vs "unavailable").
+  - Cloudflare Worker (climate normals) given 8s timeout with explicit timeout label.
+  - Version bump to 4.11.
 -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -32,8 +58,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .btn-sm{padding:4px 10px;font-size:11px}
 .btn:disabled{opacity:.4;cursor:wait}
 .fetch-time{font-size:11px;color:var(--dim);font-family:var(--mono)}
-.settings{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;display:none}
-.settings.open{display:block}
+.settings{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;display:block}
 .section-label{font-size:12px;color:var(--accent);font-family:var(--mono);font-weight:600;margin:12px 0 8px;text-transform:uppercase;letter-spacing:.05em}
 .section-label:first-child{margin-top:0}
 .settings label{font-size:11px;color:var(--dim);display:block;margin-bottom:4px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em}
@@ -125,7 +150,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .sources h2{font-size:12px;font-weight:600;margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)}
 .source-row{font-size:12px;font-family:var(--mono);margin-bottom:6px;display:flex;align-items:center}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;flex-shrink:0}
-.dot-ok{background:var(--success)}.dot-fail{background:var(--danger)}.dot-pending{background:var(--warn)}
+.dot-ok{background:var(--success)}.dot-fail{background:var(--danger)}.dot-pending{background:var(--warn)}.dot-timeout{background:#f97316}
 .source-label{color:var(--dim);width:170px;display:inline-block;flex-shrink:0}
 .sources .footer{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
 .loading{text-align:center;padding:40px 0;color:var(--dim);font-family:var(--mono);font-size:13px}
@@ -145,11 +170,10 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 <div class="header">
   <div>
     <h1><span class="icon">◈</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.10</span></div>
+    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.11</span></div>
   </div>
   <div class="actions">
     <span class="fetch-time" id="fetch-time"></span>
-    <button class="btn btn-secondary" onclick="toggleSettings()">⚙ Nodes</button>
     <button class="btn btn-primary" id="refresh-btn" onclick="fetchAllNodes()">⟳ Fetch All</button>
   </div>
 </div>
@@ -169,16 +193,16 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
     <button class="btn btn-primary btn-sm" onclick="addNode()">+ Add</button>
   </div>
   <div id="geocode-status"></div>
-  <div class="hint">NWS forecast is US-only. Non-US locations get Open-Meteo data only. Climate normals (NOAA 1991–2020) load automatically for US locations — no token or setup required.</div>
+  <div class="hint">NWS forecast is US-only. Non-US locations get Open-Meteo data only. Climate normals (ERA5 2015–2024, 7-day rolling window) load automatically for any location — no token required.</div>
   <div class="section-label">Active Nodes</div>
   <div class="node-list" id="node-list"></div>
   <div class="section-label">Export Options</div>
   <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-    <div><label>Hourly Window</label><select id="input-hours" onchange="STATE.hourlyWindow=parseInt(this.value)"><option value="12">12 hours</option><option value="24" selected>24 hours</option><option value="48">48 hours</option><option value="72">72 hours</option></select></div>
+    <div><label>Hourly Window</label><select id="input-hours" onchange="STATE.hourlyWindow=parseInt(this.value)"><option value="12">12 hours</option><option value="24">24 hours</option><option value="48">48 hours</option><option value="72" selected>72 hours</option></select></div>
     <div><label>Include AFD</label><select id="input-afd" onchange="STATE.afdMode=this.value"><option value="full" selected>Full text</option><option value="summary">Summary (2000 chars)</option><option value="none">None</option></select></div>
   </div>
   <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">
-    <button class="btn btn-primary" onclick="fetchAllNodes();document.getElementById('settings-panel').classList.remove('open')" style="padding:8px 20px;font-size:13px">⟳ Apply & Re-fetch All</button>
+    <button class="btn btn-primary" onclick="fetchAllNodes()" style="padding:8px 20px;font-size:13px">⟳ Apply & Re-fetch All</button>
     <span style="font-size:11px;color:var(--dim);font-family:var(--mono)">Re-fetches all nodes with current settings</span>
   </div>
 </div>
@@ -212,7 +236,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.10-2026-03-23";
+var VERSION="4.13-2026-03-29";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -222,7 +246,16 @@ var PRESETS=[
 ];
 var ROLE_LABELS={home_base:"Home Base",destination:"Destination",connection:"Connection",run_location:"Run Location"};
 var ROLE_CLASSES={home_base:"role-home",destination:"role-dest",connection:"role-conn",run_location:"role-run"};
-var STATE={nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",nws:null,uv:null,climate:null,errors:[],status:"idle"}],hourlyWindow:24,afdMode:"full",fetchTime:null,activeTab:"n0",nextId:1};
+var STATE={nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",nws:null,uv:null,climate:null,errors:[],timeouts:[],status:"idle"}],hourlyWindow:72,afdMode:"full",fetchTime:null,activeTab:"n0",nextId:1};
+
+// ─── Timeout constants (ms) ──────────────────────────────
+var TIMEOUT_NWS_POINTS   = 12000;  // /points endpoint — occasionally slow
+var TIMEOUT_NWS_FORECAST = 12000;  // forecast + hourly + stations + alerts
+var TIMEOUT_NWS_OBS      =  8000;  // single METAR observation — should be fast
+var TIMEOUT_NWS_AFD      = 10000;  // AFD list + fetch — two chained requests, slow
+var TIMEOUT_OPEN_METEO   = 12000;  // Open-Meteo hourly/daily
+var TIMEOUT_CLIMATE      = 20000;  // Open-Meteo archive API — 10yr daily fetch, typically ~200ms but allow headroom
+var TIMEOUT_GEOCODE      = 10000;  // Nominatim reverse/forward geocode
 
 // ─── Helpers ────────────────────────────────────────────
 function ts(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true,timeZoneName:"short"})}
@@ -236,6 +269,29 @@ function vv(x){return x!=null&&x!==undefined?x:"—"}
 function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
 function pad2(n){return String(n).padStart(2,"0")}
 function fmtTimeShort(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{hour:"numeric",minute:"2-digit",hour12:true})}
+
+// ─── Fetch with timeout (v4.11 — core fix) ──────────────
+// Returns a promise that rejects with a named timeout error after `ms` ms.
+// Uses AbortController so the underlying TCP connection is actually cancelled —
+// not just abandoned client-side. This prevents connection pool exhaustion on
+// repeated fetches when NWS is hanging.
+function fetchWithTimeout(url, options, ms) {
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, ms);
+  var fetchOpts = Object.assign({}, options, { signal: controller.signal });
+  return fetch(url, fetchOpts).then(function(r) {
+    clearTimeout(timer);
+    return r;
+  }).catch(function(e) {
+    clearTimeout(timer);
+    if (e.name === "AbortError") {
+      var err = new Error("Timeout after " + (ms/1000).toFixed(0) + "s");
+      err.isTimeout = true;
+      throw err;
+    }
+    throw e;
+  });
+}
 
 // ─── SVG Charts ─────────────────────────────────────────
 function sparkSvg(values,opts){
@@ -304,90 +360,260 @@ function barChart(labels,highs,lows){
 }
 
 // ─── API ────────────────────────────────────────────────
-function nwsFetch(url){return fetch(url,{headers:{"User-Agent":"(WeatherStation,contact@example.com)","Accept":"application/geo+json"},cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("NWS "+r.status);return r.json()})}
+// All NWS calls route through fetchWithTimeout — bare fetch() no longer used for API calls.
 
-function fetchNodeNWS(lat,lon){
-  return nwsFetch("https://api.weather.gov/points/"+lat+","+lon).then(function(pts){
-    var p=pts.properties;
-    return Promise.all([nwsFetch(p.forecast),nwsFetch(p.forecastHourly),nwsFetch(p.observationStations),nwsFetch("https://api.weather.gov/alerts/active?point="+lat+","+lon)]).then(function(res){
-      var forecast=res[0],hourly=res[1],stations=res[2],alerts=res[3];
-      var stId=stations.features&&stations.features[0]?stations.features[0].properties.stationIdentifier:null;
-      var result={office:p.gridId,stationId:stId,forecast:forecast.properties.periods||[],hourly:hourly.properties.periods||[],observation:null,alerts:alerts.features||[],afd:null,afdTime:null,forecastUpdated:forecast.properties.updateTime,hourlyUpdated:hourly.properties.updateTime};
-      var obsP=stId?nwsFetch("https://api.weather.gov/stations/"+stId+"/observations/latest").then(function(o){result.observation=o.properties}).catch(function(){}):Promise.resolve();
-      var afdP=nwsFetch("https://api.weather.gov/products/types/AFD/locations/"+p.gridId).then(function(al){var id=al["@graph"]&&al["@graph"][0]?al["@graph"][0].id:null;if(id)return nwsFetch("https://api.weather.gov/products/"+id).then(function(a){result.afd=a.productText;result.afdTime=a.issuanceTime})}).catch(function(){});
-      return Promise.all([obsP,afdP]).then(function(){return result});
-    });
+function nwsFetch(url, timeoutMs) {
+  var ms = timeoutMs || TIMEOUT_NWS_FORECAST;
+  return fetchWithTimeout(url, {
+    headers: {
+      "User-Agent": "(WeatherStation,contact@example.com)",
+      "Accept": "application/geo+json"
+    },
+    cache: "no-store"
+  }, ms).then(function(r) {
+    if (!r.ok) throw new Error("NWS " + r.status + " " + r.statusText);
+    return r.json();
   });
 }
 
-// Modified: added daily params for astronomy + precip; ensures ≥7 days; precipitation_unit=inch
-function fetchNodeUV(lat,lon){
-  var params=new URLSearchParams({
-    latitude:lat,
-    longitude:lon,
-    hourly:"uv_index,uv_index_clear_sky,temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover",
-    daily:"sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max",
-    temperature_unit:"fahrenheit",
-    wind_speed_unit:"mph",
-    precipitation_unit:"inch",
-    timezone:"auto",
-    forecast_days:String(Math.max(7,Math.ceil(STATE.hourlyWindow/24)+1))
-  });
-  return fetch("https://api.open-meteo.com/v1/forecast?"+params,{cache:"no-store"}).then(function(r){if(!r.ok)throw new Error("Open-Meteo "+r.status);return r.json()});
-}
+function fetchNodeNWS(lat, lon) {
+  // Step 1: /points — get grid metadata
+  return nwsFetch("https://api.weather.gov/points/" + lat + "," + lon, TIMEOUT_NWS_POINTS)
+    .then(function(pts) {
+      var p = pts.properties;
+      // Step 2: parallel forecast requests — each independently timed out
+      var forecP  = nwsFetch(p.forecast, TIMEOUT_NWS_FORECAST);
+      var hourlyP = nwsFetch(p.forecastHourly, TIMEOUT_NWS_FORECAST);
+      var stnsP   = nwsFetch(p.observationStations, TIMEOUT_NWS_FORECAST);
+      var alrtP   = nwsFetch("https://api.weather.gov/alerts/active?point=" + lat + "," + lon, TIMEOUT_NWS_FORECAST);
 
-// ─── Climate Normals — Cloudflare Worker proxy ───────────
-// Worker at ncei-climate.jatesch6.workers.dev holds the NCEI token
-// server-side, bypassing CORS restrictions on the CDO v2 API.
-// Works for any US location. Non-US returns null gracefully.
-var CLIMATE_WORKER="https://ncei-climate.jatesch6.workers.dev/";
+      return Promise.all([forecP, hourlyP, stnsP, alrtP]).then(function(res) {
+        var forecast = res[0], hourly = res[1], stations = res[2], alerts = res[3];
+        var stId = stations.features && stations.features[0]
+          ? stations.features[0].properties.stationIdentifier : null;
 
-function fetchNodeClimate(lat,lon){
-  var url=CLIMATE_WORKER+"?lat="+lat.toFixed(4)+"&lon="+lon.toFixed(4);
-  return fetch(url)
-    .then(function(r){if(!r.ok)return null;return r.json();})
-    .then(function(d){
-      if(!d||d.error||!d.results||!d.results.length)return null;
-      var MABBR=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-      var MNAME=["","January","February","March","April","May","June","July","August","September","October","November","December"];
-      // NOAA sentinels: -777.7=trace/N/A, -999/-9999=missing — treat all as null
-      function isSentinel(v){return v!=null&&(v===-777.7||v===-777||v===-999||v===-9999||v<-100);}
-      function pf(v){if(v==null||v==="")return null;var n=parseFloat(v);return(isNaN(n)||isSentinel(n))?null:n;}
-      function r1(v){return v!=null?Math.round(v*10)/10:null;}
-      function r2(v){return v!=null?Math.round(v*100)/100:null;}
-      // Group results by month
-      var byMonth={};
-      d.results.forEach(function(row){
-        var m=parseInt(row.date.slice(5,7),10);
-        if(!byMonth[m])byMonth[m]={};
-        var key=row.datatype.replace("MLY-","").replace("-NORMAL","");
-        byMonth[m][key]=row.value;
+        var result = {
+          office: p.gridId,
+          stationId: stId,
+          forecast: forecast.properties.periods || [],
+          hourly: hourly.properties.periods || [],
+          observation: null,
+          alerts: alerts.features || [],
+          afd: null,
+          afdTime: null,
+          forecastUpdated: forecast.properties.updateTime,
+          hourlyUpdated: hourly.properties.updateTime,
+          obsTimedOut: false,
+          afdTimedOut: false
+        };
+
+        // Observation: short timeout, non-blocking — stale or missing obs is fine
+        var obsP = stId
+          ? nwsFetch(
+              "https://api.weather.gov/stations/" + stId + "/observations/latest",
+              TIMEOUT_NWS_OBS
+            )
+              .then(function(o) { result.observation = o.properties; })
+              .catch(function(e) {
+                if (e.isTimeout) result.obsTimedOut = true;
+                console.log("[WS] Obs error:", e.message);
+              })
+          : Promise.resolve();
+
+        // AFD: two chained requests, given dedicated timeout each
+        var afdP = nwsFetch(
+          "https://api.weather.gov/products/types/AFD/locations/" + p.gridId,
+          TIMEOUT_NWS_AFD
+        ).then(function(al) {
+          var id = al["@graph"] && al["@graph"][0] ? al["@graph"][0].id : null;
+          if (id) {
+            return nwsFetch("https://api.weather.gov/products/" + id, TIMEOUT_NWS_AFD)
+              .then(function(a) {
+                result.afd = a.productText;
+                result.afdTime = a.issuanceTime;
+              });
+          }
+        }).catch(function(e) {
+          if (e.isTimeout) result.afdTimedOut = true;
+          console.log("[WS] AFD error:", e.message);
+        });
+
+        return Promise.all([obsP, afdP]).then(function() { return result; });
       });
-      var months=[];
-      for(var m=1;m<=12;m++){
-        var mo=byMonth[m]||{};
-        months.push({month:m,month_abbr:MABBR[m],month_name:MNAME[m],
-          normal_high_f:r1(pf(mo.TMAX)),
-          normal_low_f:r1(pf(mo.TMIN)),
-          normal_precip_in:r2(pf(mo.PRCP)),
-          normal_snow_in:r1(pf(mo.SNOW))});
+    });
+}
+
+// Open-Meteo — single request, straightforward timeout
+function fetchNodeUV(lat, lon) {
+  var params = new URLSearchParams({
+    latitude: lat,
+    longitude: lon,
+    hourly: "uv_index,uv_index_clear_sky,temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover",
+    daily: "sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max",
+    temperature_unit: "fahrenheit",
+    wind_speed_unit: "mph",
+    precipitation_unit: "inch",
+    timezone: "auto",
+    forecast_days: String(Math.max(7, Math.ceil(STATE.hourlyWindow / 24) + 1))
+  });
+  return fetchWithTimeout(
+    "https://api.open-meteo.com/v1/forecast?" + params,
+    { cache: "no-store" },
+    TIMEOUT_OPEN_METEO
+  ).then(function(r) {
+    if (!r.ok) throw new Error("Open-Meteo " + r.status);
+    return r.json();
+  });
+}
+
+// ─── Climate Normals — Open-Meteo Historical Archive (ERA5) ─────────────────
+// Direct browser fetch — no token, no CORS issues, no proxy needed.
+// Fetches 10 years of daily data (2015–2024) and computes normals locally.
+// Returns:
+//   months[]      — 12 monthly average normals (for climate table)
+//   today_window  — 7-day rolling window centered on today (for Δ forecast column)
+var CLIMATE_ARCHIVE_BASE = "https://archive-api.open-meteo.com/v1/archive";
+
+function fetchNodeClimate(lat, lon) {
+  var params = new URLSearchParams({
+    latitude:           lat,
+    longitude:          lon,
+    start_date:         "2015-01-01",
+    end_date:           "2024-12-31",
+    daily:              "temperature_2m_max,temperature_2m_min,precipitation_sum",
+    temperature_unit:   "fahrenheit",
+    precipitation_unit: "inch",
+    timezone:           "auto"
+  });
+  return fetchWithTimeout(
+    CLIMATE_ARCHIVE_BASE + "?" + params,
+    { cache: "no-store" },
+    TIMEOUT_CLIMATE
+  ).then(function(r) {
+    if (!r.ok) throw new Error("Open-Meteo archive " + r.status);
+    return r.json();
+  }).then(function(d) {
+    if (!d.daily || !d.daily.time || !d.daily.time.length) return null;
+
+    var times  = d.daily.time;
+    var tmaxA  = d.daily.temperature_2m_max;
+    var tminA  = d.daily.temperature_2m_min;
+    var precipA = d.daily.precipitation_sum;
+    var MABBR = ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    var MNAME = ["","January","February","March","April","May","June","July","August","September","October","November","December"];
+
+    function avg(arr) {
+      var v = arr.filter(function(x){return x!=null;});
+      if (!v.length) return null;
+      return Math.round(v.reduce(function(a,b){return a+b;},0)/v.length*10)/10;
+    }
+    function r2(v){return v!=null?Math.round(v*100)/100:null;}
+
+    // ── Monthly averages for the climate table ────────────────────────────────
+    // Precip: sum daily values per month-year, then average those monthly totals.
+    // High/low: simple average of all daily values within each month.
+    var byMonth = {};
+    var monthYearPrecip = {};
+    for (var m = 1; m <= 12; m++) byMonth[m] = {tmax:[], tmin:[]};
+
+    for (var i = 0; i < times.length; i++) {
+      var mo = parseInt(times[i].slice(5,7), 10);
+      var yr = times[i].slice(0,4);
+      if (tmaxA[i]  != null) byMonth[mo].tmax.push(tmaxA[i]);
+      if (tminA[i]  != null) byMonth[mo].tmin.push(tminA[i]);
+      var mpKey = yr + "-" + mo;
+      if (!monthYearPrecip[mpKey]) monthYearPrecip[mpKey] = {month: mo, total: 0};
+      if (precipA[i] != null) monthYearPrecip[mpKey].total += precipA[i];
+    }
+
+    // Average monthly precip totals across years
+    var monthPrecipSums = {};
+    for (var key in monthYearPrecip) {
+      var mo2 = monthYearPrecip[key].month;
+      if (!monthPrecipSums[mo2]) monthPrecipSums[mo2] = [];
+      monthPrecipSums[mo2].push(monthYearPrecip[key].total);
+    }
+
+    var months = [];
+    for (var m = 1; m <= 12; m++) {
+      var mpArr = monthPrecipSums[m] || [];
+      var avgPrecip = mpArr.length
+        ? r2(mpArr.reduce(function(a,b){return a+b;},0) / mpArr.length)
+        : null;
+      months.push({
+        month: m, month_abbr: MABBR[m], month_name: MNAME[m],
+        normal_high_f:    avg(byMonth[m].tmax),
+        normal_low_f:     avg(byMonth[m].tmin),
+        normal_precip_in: avgPrecip,
+        normal_snow_in:   null  // ERA5 archive doesn't surface snowfall by default
+      });
+    }
+
+    // ── 7-day rolling window centered on today (±3 days, cross-year) ─────────
+    // ~80 data points — used for Δ normal in the forecast row delta column.
+    var now    = new Date();
+    var todayMo = now.getMonth() + 1;
+    var todayDa = now.getDate();
+
+    // Build a set of (month, day) pairs in the ±3 window using a fixed leap year
+    // so Feb 28/29 edge cases resolve cleanly.
+    var winPairs = [];
+    for (var offset = -3; offset <= 3; offset++) {
+      var probe = new Date(2024, todayMo - 1, todayDa + offset); // 2024 = leap year
+      winPairs.push(probe.getMonth() * 100 + probe.getDate()); // packed key
+    }
+    var winSet = {};
+    winPairs.forEach(function(k){ winSet[k] = true; });
+
+    var winTmax = [], winTmin = [], winPrecip = [];
+    for (var i = 0; i < times.length; i++) {
+      var mo3 = parseInt(times[i].slice(5,7), 10);
+      var da3 = parseInt(times[i].slice(8,10), 10);
+      if (winSet[mo3 * 100 + da3]) {
+        if (tmaxA[i]  != null) winTmax.push(tmaxA[i]);
+        if (tminA[i]  != null) winTmin.push(tminA[i]);
+        if (precipA[i] != null) winPrecip.push(precipA[i]);
       }
-      var cm=new Date().getMonth()+1;
-      return{period:"1991–2020",source:"NOAA NCEI CDO v2 (via Cloudflare Worker)",
-        station_id:d.station_id,station_name:d.station_name,
-        current_month_index:cm,months:months};
-    })
-    .catch(function(e){console.log("[WS] Climate error:",e.message);return null;});
+    }
+
+    var todayWindow = null;
+    if (winTmax.length >= 5) { // require at least 5 points to publish
+      todayWindow = {
+        center: (todayMo < 10?"0":"")+todayMo+"-"+(todayDa<10?"0":"")+todayDa,
+        sample_size:     winTmax.length,
+        normal_high_f:   avg(winTmax),
+        normal_low_f:    avg(winTmin),
+        avg_daily_precip_in: avg(winPrecip)
+      };
+    }
+
+    // Station label uses ERA5 grid point coordinates returned by API
+    var gridLat = d.latitude  != null ? d.latitude.toFixed(2)  : lat.toFixed(2);
+    var gridLon = d.longitude != null ? d.longitude.toFixed(2) : lon.toFixed(2);
+
+    return {
+      period:               "ERA5 2015–2024",
+      source:               "Open-Meteo Historical Archive (ERA5 reanalysis, 10-year computed average)",
+      station_id:           null,
+      station_name:         "ERA5 grid " + gridLat + "°N, " + Math.abs(gridLon) + "°" + (parseFloat(gridLon) < 0 ? "W" : "E"),
+      current_month_index:  todayMo,
+      months:               months,
+      today_window:         todayWindow
+    };
+  }).catch(function(e) {
+    console.log("[WS] Climate error:", e.message);
+    return null;
+  });
 }
 
 // ─── Geocoding ──────────────────────────────────────────
 function resolveLocation(input){
   var el=document.getElementById("geocode-status");el.style.color="var(--dim)";el.textContent="Resolving…";
   var coordMatch=input.match(/^([+-]?\d{1,3}\.?\d*)[,\s\/]+([+-]?\d{1,3}\.?\d*)$/);
-  if(coordMatch){var lat=parseFloat(coordMatch[1]),lon=parseFloat(coordMatch[2]);if(lat>=-90&&lat<=90&&lon>=-180&&lon<=180){el.style.color="var(--success)";el.textContent="✓ "+lat.toFixed(4)+", "+lon.toFixed(4);return fetch("https://nominatim.openstreetmap.org/reverse?format=json&lat="+lat+"&lon="+lon+"&zoom=12",{headers:{"User-Agent":"WeatherStation/1.0"}}).then(function(r){return r.json()}).then(function(d){var a=d.address||{};var label=[a.city||a.town||a.village||a.hamlet,a.state].filter(Boolean).join(", ")||lat.toFixed(4)+", "+lon.toFixed(4);el.textContent="✓ "+label;return{lat:lat,lon:lon,label:label}}).catch(function(){return{lat:lat,lon:lon,label:lat.toFixed(4)+", "+lon.toFixed(4)}})}}
+  if(coordMatch){var lat=parseFloat(coordMatch[1]),lon=parseFloat(coordMatch[2]);if(lat>=-90&&lat<=90&&lon>=-180&&lon<=180){el.style.color="var(--success)";el.textContent="✓ "+lat.toFixed(4)+", "+lon.toFixed(4);return fetchWithTimeout("https://nominatim.openstreetmap.org/reverse?format=json&lat="+lat+"&lon="+lon+"&zoom=12",{headers:{"User-Agent":"WeatherStation/1.0"}},TIMEOUT_GEOCODE).then(function(r){return r.json()}).then(function(d){var a=d.address||{};var label=[a.city||a.town||a.village||a.hamlet,a.state].filter(Boolean).join(", ")||lat.toFixed(4)+", "+lon.toFixed(4);el.textContent="✓ "+label;return{lat:lat,lon:lon,label:label}}).catch(function(){return{lat:lat,lon:lon,label:lat.toFixed(4)+", "+lon.toFixed(4)}})}}
   var q=input;if(input.match(/^\d{5}(-\d{4})?$/))q+=", USA";
-  return fetch("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&countrycodes=us,ca,gb,au,nz,ie&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}}).then(function(r){return r.json()}).then(function(results){
-    if(!results.length)return fetch("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}}).then(function(r){return r.json()});
+  return fetchWithTimeout("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&countrycodes=us,ca,gb,au,nz,ie&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},TIMEOUT_GEOCODE).then(function(r){return r.json()}).then(function(results){
+    if(!results.length)return fetchWithTimeout("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},TIMEOUT_GEOCODE).then(function(r){return r.json()});
     return results;
   }).then(function(results){
     if(!results.length){el.style.color="var(--danger)";el.textContent="✗ Not found: \""+input+"\"";return null}
@@ -405,7 +631,7 @@ function addNode(){
   resolveLocation(input).then(function(loc){
     if(!loc)return;
     var id="n"+(STATE.nextId++);
-    STATE.nodes.push({id:id,label:loc.label,lat:loc.lat,lon:loc.lon,role:role,nws:null,uv:null,climate:null,errors:[],status:"idle"});
+    STATE.nodes.push({id:id,label:loc.label,lat:loc.lat,lon:loc.lon,role:role,nws:null,uv:null,climate:null,errors:[],timeouts:[],status:"idle"});
     document.getElementById("input-location").value="";
     renderNodeList();renderTabs();
     fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);
@@ -415,21 +641,42 @@ function removeNode(id){STATE.nodes=STATE.nodes.filter(function(n){return n.id!=
 function addPreset(i){
   var p=PRESETS[i];
   if(STATE.nodes.some(function(n){return Math.abs(n.lat-p.lat)<0.01&&Math.abs(n.lon-p.lon)<0.01})){document.getElementById("geocode-status").style.color="var(--warn)";document.getElementById("geocode-status").textContent="Already added: "+p.label;return}
-  var id="n"+(STATE.nextId++);STATE.nodes.push({id:id,label:p.label,lat:p.lat,lon:p.lon,role:p.role,nws:null,uv:null,climate:null,errors:[],status:"idle"});
+  var id="n"+(STATE.nextId++);STATE.nodes.push({id:id,label:p.label,lat:p.lat,lon:p.lon,role:p.role,nws:null,uv:null,climate:null,errors:[],timeouts:[],status:"idle"});
   renderNodeList();renderTabs();fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);
 }
 
 // ─── Fetch ──────────────────────────────────────────────
 function fetchSingleNode(node){
-  node.status="loading";node.errors=[];node.climate=null;renderNodeList();renderTabs();
-  var nwsP=fetchNodeNWS(node.lat,node.lon).then(function(d){node.nws=d}).catch(function(e){node.errors.push("NWS: "+e.message);node.nws=null});
-  var uvP=fetchNodeUV(node.lat,node.lon).then(function(d){node.uv=d}).catch(function(e){node.errors.push("Open-Meteo: "+e.message);node.uv=null});
-  var climateP=fetchNodeClimate(node.lat,node.lon).then(function(d){node.climate=d}).catch(function(e){node.climate=null});
-  return Promise.all([nwsP,uvP,climateP]).then(function(){
-    node.status=(node.nws||node.uv)?"ready":"error";
+  node.status="loading";node.errors=[];node.timeouts=[];node.climate=null;renderNodeList();renderTabs();
+
+  var nwsP = fetchNodeNWS(node.lat, node.lon)
+    .then(function(d) { node.nws = d; })
+    .catch(function(e) {
+      var msg = e.isTimeout ? "NWS: timed out after " + (TIMEOUT_NWS_POINTS/1000).toFixed(0) + "s" : "NWS: " + e.message;
+      node.errors.push(msg);
+      if (e.isTimeout) node.timeouts.push("NWS");
+      node.nws = null;
+    });
+
+  var uvP = fetchNodeUV(node.lat, node.lon)
+    .then(function(d) { node.uv = d; })
+    .catch(function(e) {
+      var msg = e.isTimeout ? "Open-Meteo: timed out" : "Open-Meteo: " + e.message;
+      node.errors.push(msg);
+      if (e.isTimeout) node.timeouts.push("Open-Meteo");
+      node.uv = null;
+    });
+
+  var climateP = fetchNodeClimate(node.lat, node.lon)
+    .then(function(d) { node.climate = d; })
+    .catch(function() { node.climate = null; });
+
+  return Promise.all([nwsP, uvP, climateP]).then(function() {
+    node.status = (node.nws || node.uv) ? "ready" : "error";
     renderNodeList();renderTabs();renderActivePanel();updateActionBar();
   });
 }
+
 function fetchAllNodes(){
   var btn=document.getElementById("refresh-btn");btn.disabled=true;btn.textContent="Fetching…";
   document.getElementById("loading").style.display="block";
@@ -455,10 +702,8 @@ function buildExportPayload(){
   var now=new Date();
   var nodes=STATE.nodes.map(function(node){
     var nws=node.nws,uv=node.uv,obs=nws?nws.observation:null;
-    // Current observations
     var currentObs=null;
     if(obs){
-      // Empty raw_metar = QC-rejected obs; wind values unreliable — null them so prompts use hourly fallback
       var metar=obs.rawMessage||"";
       var windOk=metar.length>0;
       currentObs={
@@ -474,27 +719,21 @@ function buildExportPayload(){
         pressure_inhg:paToInHg(obs.barometricPressure?obs.barometricPressure.value:null),
         sky:obs.textDescription,
         raw_metar:metar
-      };}
-    // Current UV
+      };
+    }
     var currentUV=null;
     if(uv&&uv.hourly){var nowH=now.toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){currentUV=uv.hourly.uv_index[ui];break}}}
-    // NWS hourly
     var hrs=STATE.hourlyWindow;
     var nwsHourly=(nws&&nws.hourly||[]).slice(0,hrs).map(function(h){
       var hourUV=null;if(uv&&uv.hourly){var hk=h.startTime.slice(0,13);for(var j=0;j<(uv.hourly.time||[]).length;j++){if(uv.hourly.time[j].indexOf(hk)===0){hourUV=uv.hourly.uv_index[j];break}}}
       return{time:h.startTime,temp_f:h.temperature,wind:h.windSpeed,wind_dir:h.windDirection,precip_pct:(h.probabilityOfPrecipitation&&h.probabilityOfPrecipitation.value)||0,sky:h.shortForecast,detailed:h.detailedForecast,uv_index:hourUV};
     });
-    // 7-day forecast
     var forecast7day=(nws&&nws.forecast||[]).map(function(p){return{name:p.name,temp_f:p.temperature,temp_unit:p.temperatureUnit,wind:p.windSpeed,wind_dir:p.windDirection,precip_pct:(p.probabilityOfPrecipitation&&p.probabilityOfPrecipitation.value)||0,sky:p.shortForecast,narrative:p.detailedForecast}});
-    // Alerts
     var alerts=(nws&&nws.alerts||[]).map(function(a){return{event:a.properties.event,severity:a.properties.severity,headline:a.properties.headline,onset:a.properties.onset,expires:a.properties.expires,description:a.properties.description}});
-    // AFD
     var afdText=null;
     if(nws&&nws.afd&&STATE.afdMode!=="none"){afdText=STATE.afdMode==="summary"?nws.afd.slice(0,2000)+(nws.afd.length>2000?"\n[...truncated]":""):nws.afd}
-    // Open-Meteo hourly
     var omHourly=null;
     if(uv&&uv.hourly){var times=uv.hourly.time||[];omHourly=[];for(var k=0;k<Math.min(times.length,hrs);k++){var t=new Date(times[k]);if(t<new Date(now.getTime()-3600000))continue;omHourly.push({time:times[k],uv_index:uv.hourly.uv_index[k],temp_f:uv.hourly.temperature_2m[k],feels_like_f:uv.hourly.apparent_temperature[k],humidity_pct:uv.hourly.relative_humidity_2m[k],dewpoint_f:uv.hourly.dew_point_2m[k],precip_pct:uv.hourly.precipitation_probability[k],wind_mph:uv.hourly.wind_speed_10m[k],wind_dir_deg:uv.hourly.wind_direction_10m[k],wind_gust_mph:uv.hourly.wind_gusts_10m[k],cloud_cover_pct:uv.hourly.cloud_cover[k]})}}
-    // ── NEW: Open-Meteo daily (7 days) with astronomy ──
     var omDaily=null;
     var astronomy=null;
     if(uv&&uv.daily){
@@ -505,49 +744,20 @@ function buildExportPayload(){
         var dlMin=srISO&&ssISO?Math.round((new Date(ssISO)-new Date(srISO))/60000):null;
         var dlH=dlMin!=null?Math.floor(dlMin/60):null;
         var dlM=dlMin!=null?dlMin%60:null;
-        return{
-          date:date,
-          sunrise_iso:srISO,
-          sunset_iso:ssISO,
-          day_length_min:dlMin,
-          day_length_formatted:dlH!=null?dlH+"h "+pad2(dlM)+"m":null,
-          precip_in:uv.daily.precipitation_sum?uv.daily.precipitation_sum[di]:null,
-          snowfall_in:uv.daily.snowfall_sum?uv.daily.snowfall_sum[di]:null,
-          wind_max_mph:uv.daily.wind_speed_10m_max?uv.daily.wind_speed_10m_max[di]:null
-        };
+        return{date:date,sunrise_iso:srISO,sunset_iso:ssISO,day_length_min:dlMin,day_length_formatted:dlH!=null?dlH+"h "+pad2(dlM)+"m":null,precip_in:uv.daily.precipitation_sum?uv.daily.precipitation_sum[di]:null,snowfall_in:uv.daily.snowfall_sum?uv.daily.snowfall_sum[di]:null,wind_max_mph:uv.daily.wind_speed_10m_max?uv.daily.wind_speed_10m_max[di]:null};
       });
-      // Today's astronomy summary
       var todayStr=now.toISOString().slice(0,10);
       var todayEntry=null;
       for(var ti=0;ti<omDaily.length;ti++){if(omDaily[ti].date===todayStr){todayEntry=omDaily[ti];break}}
-      if(todayEntry){
-        astronomy={
-          date:todayEntry.date,
-          sunrise_iso:todayEntry.sunrise_iso,
-          sunset_iso:todayEntry.sunset_iso,
-          day_length_min:todayEntry.day_length_min,
-          day_length_formatted:todayEntry.day_length_formatted,
-          source:"Open-Meteo forecast (computed from coordinates)"
-        };
-      }
+      if(todayEntry){astronomy={date:todayEntry.date,sunrise_iso:todayEntry.sunrise_iso,sunset_iso:todayEntry.sunset_iso,day_length_min:todayEntry.day_length_min,day_length_formatted:todayEntry.day_length_formatted,source:"Open-Meteo forecast (computed from coordinates)"};}
     }
     return{
-      id:node.id,
-      role:node.role,
-      label:node.label,
-      latitude:node.lat,
-      longitude:node.lon,
-      nws_office:nws?nws.office:null,
-      station:nws?nws.stationId:null,
-      current_observations:currentObs,
-      current_uv_index:currentUV,
-      nws_hourly_forecast:nwsHourly,
-      nws_7day_forecast:forecast7day,
-      open_meteo_hourly:omHourly,
-      open_meteo_daily:omDaily,
-      astronomy:astronomy,
-      climate_normals:node.climate||null,
-      alerts:alerts,
+      id:node.id,role:node.role,label:node.label,latitude:node.lat,longitude:node.lon,
+      nws_office:nws?nws.office:null,station:nws?nws.stationId:null,
+      current_observations:currentObs,current_uv_index:currentUV,
+      nws_hourly_forecast:nwsHourly,nws_7day_forecast:forecast7day,
+      open_meteo_hourly:omHourly,open_meteo_daily:omDaily,astronomy:astronomy,
+      climate_normals:node.climate||null,alerts:alerts,
       afd:afdText?{office:nws.office,issued:nws.afdTime,mode:STATE.afdMode,text:afdText}:null,
       source_freshness:{
         observations:obs?obs.timestamp:null,
@@ -555,7 +765,7 @@ function buildExportPayload(){
         seven_day_forecast:nws?nws.forecastUpdated:null,
         afd:nws?nws.afdTime:null,
         open_meteo:now.toISOString(),
-        climate_normals:node.climate?"NOAA NCEI 1991–2020 (normals-monthly-1991-2020, station: "+(node.climate.station_id||"?")+(node.climate.station_name?" "+node.climate.station_name:"")+")":null
+        climate_normals:node.climate?"Open-Meteo ERA5 2015–2024 (10-year computed average, 7-day window normals)":null
       }
     };
   });
@@ -581,7 +791,8 @@ function renderNodeList(){
   document.getElementById("node-list").innerHTML=STATE.nodes.map(function(n){
     var st=n.status==="loading"?'<span class="spinner"></span>':n.status==="ready"?'<span style="color:var(--success)">✓</span>':n.status==="error"?'<span style="color:var(--danger)">✗</span>':'—';
     var climSt=n.climate?'<span style="color:var(--purple);font-size:10px;margin-left:4px" title="Climate normals loaded">≋</span>':n.status==="loading"?'<span style="color:var(--dim);font-size:10px;margin-left:4px" title="Loading climate normals...">≋</span>':'';
-    return'<div class="node-item"><span class="role-badge '+ROLE_CLASSES[n.role]+'">'+ROLE_LABELS[n.role]+'</span><span class="node-label">'+esc(n.label)+'</span><span class="node-coords">'+n.lat.toFixed(4)+', '+n.lon.toFixed(4)+'</span><span class="node-status">'+st+climSt+'</span>'+(STATE.nodes.length>1?'<button class="btn btn-danger btn-sm" onclick="removeNode(\''+n.id+'\')">✗</button>':'')+'</div>'
+    var toSt=n.timeouts&&n.timeouts.length?'<span style="color:#f97316;font-size:10px;margin-left:4px" title="Timed out: '+n.timeouts.join(', ')+'">⏱</span>':'';
+    return'<div class="node-item"><span class="role-badge '+ROLE_CLASSES[n.role]+'">'+ROLE_LABELS[n.role]+'</span><span class="node-label">'+esc(n.label)+'</span><span class="node-coords">'+n.lat.toFixed(4)+', '+n.lon.toFixed(4)+'</span><span class="node-status">'+st+climSt+toSt+'</span>'+(STATE.nodes.length>1?'<button class="btn btn-danger btn-sm" onclick="removeNode(\''+n.id+'\')">✗</button>':'')+'</div>'
   }).join("")
 }
 function renderTabs(){
@@ -601,17 +812,14 @@ function renderActivePanel(){
 
   if(errors.length)html+='<div class="errors">'+errors.map(function(e){return'<div>✗ '+esc(e)+'</div>'}).join("")+'</div>';
 
-  // Alerts
   if(nws&&nws.alerts&&nws.alerts.length)html+=nws.alerts.map(function(a){var p=a.properties;var sev=(p.severity==="Extreme"||p.severity==="Severe")?"severe":"moderate";return'<div class="alert-box '+sev+'"><div class="alert-title" style="color:var(--'+(sev==="severe"?"danger":"warn")+')">⚠ '+esc(p.event)+'</div><div class="alert-headline">'+esc(p.headline||"")+'</div><div class="alert-time">'+ts(p.onset)+' → '+ts(p.expires)+'</div></div>'}).join("");
 
-  // Current conditions
   if(nws&&nws.observation){
     var obs=nws.observation,temp=cToF(obs.temperature?obs.temperature.value:null),dew=cToF(obs.dewpoint?obs.dewpoint.value:null),wind=mpsToMph(obs.windSpeed?obs.windSpeed.value:null),gust=mpsToMph(obs.windGust?obs.windGust.value:null),wdir=compass(obs.windDirection?obs.windDirection.value:null),vis=mToMi(obs.visibility?obs.visibility.value:null),pres=paToInHg(obs.barometricPressure?obs.barometricPressure.value:null),hum=obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,sky=obs.textDescription||"",oTime=obs.timestamp,fl=nws.hourly&&nws.hourly[0]?nws.hourly[0].temperature:null;
     var curUV=null;if(uv&&uv.hourly){var nowH=new Date().toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){curUV=uv.hourly.uv_index[ui];break}}}
     html+='<div class="section-header"><h2>Current Conditions</h2><span class="badge badge-fresh">'+ago(oTime)+'</span><span class="meta">'+ts(oTime)+'</span></div>';
     html+='<div class="pills">'+pill("Temp",vv(temp),"°F",sky)+pill("Feels like",vv(fl),"°F","")+pill("Dew Pt",vv(dew),"°F","")+pill("Humidity",vv(hum),"%","")+pill("Wind",vv(wind)," mph",wdir+(gust?" · G"+gust:""))+pill("Vis",vv(vis)," mi","")+pill("Pressure",vv(pres)," inHg","")+pill("UV",curUV!=null?Math.round(curUV*10)/10:"—","",curUV==null?"—":curUV<3?"Low":curUV<6?"Mod":"High")+'</div>';
 
-    // ── NEW: Astronomy bar ──────────────────────────────
     if(uv&&uv.daily){
       var todayStr=new Date().toISOString().slice(0,10);
       var dailyTimes=uv.daily.time||[];
@@ -633,7 +841,6 @@ function renderActivePanel(){
     }
   }
 
-  // Hourly trend charts
   if(nws&&nws.hourly&&nws.hourly.length>2){
     var count=Math.min(nws.hourly.length,STATE.hourlyWindow);
     var temps=[],precips=[],winds=[];
@@ -649,7 +856,6 @@ function renderActivePanel(){
     html+='</div>';
   }
 
-  // Hourly cards
   if(nws&&nws.hourly&&nws.hourly.length){
     var count2=Math.min(nws.hourly.length,STATE.hourlyWindow);
     html+='<div style="margin-top:16px"><div class="section-header"><h2>Hourly</h2><span class="badge badge-fresh">'+ago(nws.hourlyUpdated)+'</span><span class="meta">'+count2+' hrs</span></div><div class="hourly-scroll"><div class="hourly-row">';
@@ -666,7 +872,6 @@ function renderActivePanel(){
     html+='</div></div></div>';
   }
 
-  // 7-day with chart
   if(nws&&nws.forecast&&nws.forecast.length){
     var dayLabels=[],dayHighs=[],dayLows=[];
     for(var fi=0;fi<nws.forecast.length;fi+=2){
@@ -676,33 +881,48 @@ function renderActivePanel(){
       else{dayHighs.push(null);dayLows.push(dayP.temperature)}
     }
     html+='<div style="margin-top:16px"><div class="section-header"><h2>7-Day</h2><span class="badge badge-fresh">'+ago(nws.forecastUpdated)+'</span></div>';
-    if(dayHighs.filter(function(v){return v!=null}).length>1){
-      html+='<div class="chart-container"><h3>High / Low Range';
-      // Δ Normal annotation in chart header — look up current month from months[]
-      if(node.climate&&node.climate.months){
-        var nowMIdx=new Date().getMonth()+1;
-        var cnArr=node.climate.months[nowMIdx-1];
-        if(cnArr&&cnArr.normal_high_f!=null){
-          html+=' <span style="color:var(--dim);font-weight:400"> · Normal: High '+cnArr.normal_high_f+'° / Low '+cnArr.normal_low_f+'° ('+cnArr.month_abbr+')</span>';
+      if(dayHighs.filter(function(v){return v!=null}).length>1){
+        html+='<div class="chart-container"><h3>High / Low Range';
+        if(node.climate){
+          var normLabel=null;
+          if(node.climate.today_window){
+            normLabel='Normal (±3 day window): High '+node.climate.today_window.normal_high_f+'° / Low '+node.climate.today_window.normal_low_f+'°';
+          } else if(node.climate.months){
+            var nowMIdx=new Date().getMonth()+1;
+            var cnArr=node.climate.months[nowMIdx-1];
+            if(cnArr&&cnArr.normal_high_f!=null){
+              normLabel='Normal: High '+cnArr.normal_high_f+'° / Low '+cnArr.normal_low_f+'° ('+cnArr.month_abbr+')';
+            }
+          }
+          if(normLabel) html+=' <span style="color:var(--dim);font-weight:400"> · '+normLabel+'</span>';
         }
+        html+='</h3>'+barChart(dayLabels,dayHighs,dayLows)+'</div>';
       }
-      html+='</h3>'+barChart(dayLabels,dayHighs,dayLows)+'</div>';
-    }
     html+='<div class="forecast-rows" style="margin-top:8px">';
     for(var fj=0;fj<nws.forecast.length;fj++){
       var fp=nws.forecast[fj],prec=fp.probabilityOfPrecipitation?fp.probabilityOfPrecipitation.value:0;
-      // Δ Normal delta — look up current month from months[]
       var deltaStr="";
-      if(node.climate&&node.climate.months){
-        var nowM=new Date().getMonth()+1;
-        var normMonth=node.climate.months[nowM-1];
-        if(normMonth){
-          var normRef=fp.isDaytime!==false?normMonth.normal_high_f:normMonth.normal_low_f;
-          if(normRef!=null&&fp.temperature!=null){
-            var delta=Math.round(fp.temperature-normRef);
-            var dColor=delta>0?"var(--danger)":delta<0?"var(--accent)":"var(--dim)";
-            deltaStr='<span style="font-size:11px;color:'+dColor+';font-family:var(--mono);flex-shrink:0;width:44px;text-align:right">'+(delta>0?"+":"")+delta+'°Δ</span>';
+      if(node.climate){
+        // Use 7-day rolling window for first ~7 forecast periods (within window range),
+        // monthly normal as fallback for days further out.
+        var useWindow = node.climate.today_window && fj < 8;
+        var normRef = null;
+        if(useWindow){
+          normRef = fp.isDaytime!==false
+            ? node.climate.today_window.normal_high_f
+            : node.climate.today_window.normal_low_f;
+        } else if(node.climate.months){
+          var nowM=new Date().getMonth()+1;
+          var normMonth=node.climate.months[nowM-1];
+          if(normMonth){
+            normRef=fp.isDaytime!==false?normMonth.normal_high_f:normMonth.normal_low_f;
           }
+        }
+        if(normRef!=null&&fp.temperature!=null){
+          var delta=Math.round(fp.temperature-normRef);
+          var dColor=delta>0?"var(--danger)":delta<0?"var(--accent)":"var(--dim)";
+          var wLabel=useWindow?' title="7-day window normal"':'';
+          deltaStr='<span style="font-size:11px;color:'+dColor+';font-family:var(--mono);flex-shrink:0;width:44px;text-align:right"'+wLabel+'>'+(delta>0?"+":"")+delta+'°Δ</span>';
         }
       }
       html+='<div class="forecast-row"><div class="name">'+esc(fp.name)+'</div><div class="temp">'+fp.temperature+'°<span class="unit">'+fp.temperatureUnit+'</span></div><div class="fwind">'+fp.windSpeed+' '+fp.windDirection+'</div>'+deltaStr+(prec>0?'<span class="badge badge-precip">💧'+prec+'%</span>':'')+'<div class="short">'+esc(fp.shortForecast)+'</div></div>';
@@ -710,13 +930,11 @@ function renderActivePanel(){
     html+='</div></div>';
   }
 
-  // AFD
   if(nws&&nws.afd){
     var afdId="afd-"+node.id;
     html+='<div style="margin-top:16px"><button class="afd-toggle" onclick="var el=document.getElementById(\''+afdId+'\');el.classList.toggle(\'open\');this.querySelector(\'h2\').textContent=(el.classList.contains(\'open\')?\'▾\':\'▸\')+\' AFD — '+esc(nws.office)+'\'"><h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ AFD — '+esc(nws.office)+'</h2><span class="badge badge-fresh">'+ago(nws.afdTime)+'</span></button><pre class="afd-text" id="'+afdId+'">'+esc(nws.afd)+'</pre></div>';
   }
 
-  // ── Climate Normals section ──────────────────────────
   if(node.climate&&node.climate.months){
     var cl=node.climate;
     var nowMonth=new Date().getMonth()+1;
@@ -724,7 +942,7 @@ function renderActivePanel(){
     html+='<div class="section-header">';
     html+='<h2>Climate Normals</h2>';
     html+='<span class="badge" style="background:#a78bfa22;color:var(--purple)">'+esc(cl.period)+'</span>';
-    html+='<span class="meta" style="margin-left:4px">'+esc(cl.station_name||cl.station_id||"")+'</span>';
+    html+='<span class="meta" style="margin-left:4px">'+esc(cl.station_name||"")+'</span>';
     html+='</div>';
     html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px">';
     html+='<table class="climate-table">';
@@ -744,34 +962,41 @@ function renderActivePanel(){
       html+='</tr>';
     });
     html+='</tbody></table>';
-    html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">'+esc(cl.source)+' · '+esc(cl.station_id||"")+'</div>';
+    html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">'+esc(cl.source)+'</div>';
     html+='</div></div>';
   } else if(node.status==="loading"){
     html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)"><span class="spinner"></span> Loading climate normals…</div>';
   }
 
-  // Sources
+  // Sources — now shows timeout state distinctly from hard failure
   var sObs=nws&&nws.observation;var sTime=sObs?sObs.timestamp:null;
   var sUV=null;if(uv&&uv.hourly){var nowH2=new Date().toISOString().slice(0,13);for(var si=0;si<(uv.hourly.time||[]).length;si++){if(uv.hourly.time[si].indexOf(nowH2)===0){sUV=uv.hourly.uv_index[si];break}}}
   var hasAstro=uv&&uv.daily&&uv.daily.sunrise&&uv.daily.sunrise.length>0;
+  var obsTimedOut=nws&&nws.obsTimedOut;
+  var afdTimedOut=nws&&nws.afdTimedOut;
   html+='<div class="sources"><h2>Sources — '+esc(node.label)+'</h2>'+
-    srcRow(!!sObs,"Observations",sObs?ts(sTime)+" ("+ago(sTime)+")":"unavailable",nws&&nws.stationId?" · "+nws.stationId:"")+
-    srcRow(nws&&nws.hourly&&nws.hourly.length>0,"Hourly Forecast",nws&&nws.hourlyUpdated?ts(nws.hourlyUpdated)+" ("+ago(nws.hourlyUpdated)+")":"unavailable")+
-    srcRow(nws&&nws.forecast&&nws.forecast.length>0,"7-Day Forecast",nws&&nws.forecastUpdated?ts(nws.forecastUpdated)+" ("+ago(nws.forecastUpdated)+")":"unavailable")+
-    srcRow(nws&&nws.alerts!=null,"Alerts",nws&&nws.alerts?nws.alerts.length+" active":"unavailable")+
-    srcRow(nws&&!!nws.afd,"AFD",nws&&nws.afdTime?ts(nws.afdTime)+" ("+ago(nws.afdTime)+")":"unavailable",nws&&nws.office?" · "+nws.office:"")+
-    srcRow(sUV!=null,"Open-Meteo UV",sUV!=null?"UV "+Math.round(sUV*10)/10:"unavailable")+
-    srcRow(hasAstro,"Astronomy (daily)","Sunrise/sunset · 7-day · Open-Meteo")+
-    srcRow(!!node.climate,"Climate Normals",node.climate?"NOAA NCEI "+node.climate.period+" · "+node.climate.station_id+(node.climate.station_name?" · "+node.climate.station_name:""):"unavailable (non-US or no station)")+
-    '<div class="footer">Live → api.weather.gov + api.open-meteo.com · Climate → ncei.noaa.gov/access/services/data/v1 (NOAA 1991–2020, no key required)</div></div>';
+    srcRow(!!sObs, obsTimedOut, "Observations", sObs?ts(sTime)+" ("+ago(sTime)+")":obsTimedOut?"timed out ("+TIMEOUT_NWS_OBS/1000+"s)":"unavailable", nws&&nws.stationId?" · "+nws.stationId:"")+
+    srcRow(nws&&nws.hourly&&nws.hourly.length>0, false, "Hourly Forecast", nws&&nws.hourlyUpdated?ts(nws.hourlyUpdated)+" ("+ago(nws.hourlyUpdated)+")":"unavailable")+
+    srcRow(nws&&nws.forecast&&nws.forecast.length>0, false, "7-Day Forecast", nws&&nws.forecastUpdated?ts(nws.forecastUpdated)+" ("+ago(nws.forecastUpdated)+")":"unavailable")+
+    srcRow(nws&&nws.alerts!=null, false, "Alerts", nws&&nws.alerts?nws.alerts.length+" active":"unavailable")+
+    srcRow(nws&&!!nws.afd, afdTimedOut, "AFD", nws&&nws.afdTime?ts(nws.afdTime)+" ("+ago(nws.afdTime)+")":afdTimedOut?"timed out ("+TIMEOUT_NWS_AFD/1000+"s)":"unavailable", nws&&nws.office?" · "+nws.office:"")+
+    srcRow(sUV!=null, false, "Open-Meteo UV", sUV!=null?"UV "+Math.round(sUV*10)/10:"unavailable")+
+    srcRow(hasAstro, false, "Astronomy (daily)", "Sunrise/sunset · 7-day · Open-Meteo")+
+    srcRow(!!node.climate, false, "Climate Normals", node.climate?"ERA5 "+node.climate.period+" · "+node.climate.station_name+(node.climate.today_window?" · window: "+node.climate.today_window.normal_high_f+"°/"+node.climate.today_window.normal_low_f+"°F":""):"unavailable")+
+    '<div class="footer">Live → api.weather.gov + api.open-meteo.com · Climate → archive-api.open-meteo.com (ERA5 2015–2024, 7-day window normals) · Timeouts: NWS '+TIMEOUT_NWS_POINTS/1000+'s, Open-Meteo '+TIMEOUT_OPEN_METEO/1000+'s, Climate '+TIMEOUT_CLIMATE/1000+'s</div></div>';
 
   panel.innerHTML=html;
 }
 function pill(l,val,u,s){return'<div class="pill"><div class="label">'+l+'</div><div class="value">'+val+'<span class="unit">'+u+'</span></div>'+(s?'<div class="sub">'+s+'</div>':'')+'</div>'}
-function srcRow(ok,l,info,extra){return'<div class="source-row"><span class="dot '+(ok?"dot-ok":"dot-fail")+'"></span><span class="source-label">'+l+'</span><span>'+info+(extra||"")+'</span></div>'}
+
+// Updated srcRow: ok=data present, timedOut=request timed out (orange vs red)
+function srcRow(ok, timedOut, l, info, extra){
+  var dotClass = ok ? "dot-ok" : timedOut ? "dot-timeout" : "dot-fail";
+  return'<div class="source-row"><span class="dot '+dotClass+'"></span><span class="source-label">'+l+'</span><span>'+info+(extra||"")+'</span></div>'
+}
 
 // ─── UI ─────────────────────────────────────────────────
-function toggleSettings(){document.getElementById("settings-panel").classList.toggle("open")}
+// Settings panel is always visible in v4.12 — toggleSettings removed
 document.getElementById("input-location").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();addNode()}});
 
 // ─── Init ───────────────────────────────────────────────
