@@ -4,44 +4,34 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
-<meta name="version" content="4.13-2026-03-29">
-<!-- Weather Station v4.13 | Last updated: 2026-03-29 -->
+<meta name="version" content="4.14-2026-04-03">
+<!-- Weather Station v4.14 | Last updated: 2026-04-03 -->
 <!--
-  v4.13 changes:
-  - Climate normals source replaced entirely. Cloudflare Worker + NCEI CDO v2
-    removed. New source: Open-Meteo Historical Archive API (ERA5 reanalysis,
-    archive-api.open-meteo.com). No token, no CORS issues, direct browser fetch.
-  - fetchNodeClimate now fetches 10 years of daily highs/lows/precip (2015–2024)
-    and computes normals locally in JS — no server-side proxy needed.
-  - Monthly normals (for climate table): simple monthly averages across 10 years.
-    Monthly precip is sum-per-month averaged across years (correct methodology).
-  - today_window: 7-day rolling window centered on today's date (±3 days),
-    ~80 data points. Used for delta normal in 7-day forecast rows — more accurate
-    than monthly bucket at season transitions.
-  - Forecast delta normal column now uses today_window.normal_high_f /
-    normal_low_f when available, falling back to monthly normal.
-  - TIMEOUT_CLIMATE bumped to 20s (larger response than worker, still fast).
-  - Source attribution updated throughout: "ERA5 2015-2024" replaces "NOAA NCEI".
-  - CLIMATE_WORKER constant removed.
-
-  v4.12 changes:
-  - Root cause of "slow/frozen" behavior: no fetch timeouts anywhere in codebase.
-    NWS API (api.weather.gov) intermittently accepts connections but never resolves
-    them. Without AbortController timeouts, one stalled request hangs the entire
-    fetch chain indefinitely.
-  - Added fetchWithTimeout() wrapper (default 12s, configurable) using AbortController.
-    Applied to: nwsFetch, fetchNodeUV, fetchNodeClimate, resolveLocation.
-  - AFD fetch given a tighter 10s timeout (two chained requests, slow even on good days).
-  - NWS observation fetch given 8s timeout (single METAR, should be fast).
-  - fetchNodeNWS now catches per-subrequest so a stalled AFD or obs doesn't block
-    forecast data from rendering.
-  - Added per-node timeout display in source rows (shows "timed out" vs "unavailable").
-  - Cloudflare Worker (climate normals) given 8s timeout with explicit timeout label.
-  - Version bump to 4.11.
+  v4.14 changes:
+  - Added opt-in Additional NWS Products panel in settings.
+  - WPC ERO (Excessive Rainfall Outlook): fetches latest Day 1 ERO text product
+    from WPC via NWS API products endpoint. Parses risk levels (Marginal/Slight/
+    Enhanced/High) from product text and surfaces them as color-coded badges.
+    Displayed as collapsible block below AFD. Included in export payload.
+  - WPC MPD (Mesoscale Precipitation Discussion): fetches up to 3 most recent
+    MPDs from WPC. Each displayed as collapsible block. Empty state shown when
+    no active discussions. Included in export payload.
+  - LSR (Local Storm Reports): fetches most recent LSR from the node's NWS office.
+    Requires NWS data to be available (office ID from /points response).
+    Displayed as collapsible block. Included in export payload.
+  - ASOS Hourly Precip: fetches last 24 observations from the node's NWS obs
+    station. Extracts precipitationLastHour/3Hr/6Hr values, converts mm→inches,
+    renders as a table with non-zero rows highlighted. Included in export payload.
+  - Extra product fetches run after the main Promise.all resolves (NWS office ID
+    and station ID needed for LSR/ASOS). All extra fetches are individually
+    error-isolated so a failed ERO doesn't block MPD, etc.
+  - SOURCE PANEL updated: extra product rows shown when those products are enabled,
+    with "not fetched" state when toggle is off.
+  - CSS: .extra-product-toggle label style for checkbox cards.
 -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0f1117;--card:#181b23;--border:#2a2d38;--text:#e8e9ed;--dim:#6b7084;--accent:#60a5fa;--warn:#fbbf24;--danger:#f87171;--success:#4ade80;--purple:#a78bfa;--mono:'JetBrains Mono','SF Mono','Fira Code',monospace;--body:'DM Sans','Helvetica Neue',sans-serif}
+:root{--bg:#0f1117;--card:#181b23;--border:#2a2d38;--text:#e8e9ed;--dim:#6b7084;--accent:#60a5fa;--warn:#fbbf24;--danger:#f87171;--success:#4ade80;--purple:#a78bfa;--orange:#f97316;--mono:'JetBrains Mono','SF Mono','Fira Code',monospace;--body:'DM Sans','Helvetica Neue',sans-serif}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:1.5;padding:20px 24px;min-height:100vh}
 .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px}
@@ -78,6 +68,15 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .presets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .preset-btn{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--dim);padding:4px 10px;cursor:pointer;font-size:11px;font-family:var(--mono);transition:all .15s}
 .preset-btn:hover{border-color:var(--accent);color:var(--accent)}
+/* ── Extra product toggle cards ── */
+.extra-products-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;margin-bottom:4px}
+.extra-product-toggle{display:flex;gap:10px;align-items:flex-start;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;cursor:pointer;transition:border-color .15s;text-transform:none!important;letter-spacing:0!important;font-size:inherit!important;color:inherit!important;margin:0!important}
+.extra-product-toggle:hover{border-color:var(--accent)}
+.extra-product-toggle input[type=checkbox]{margin-top:2px;flex-shrink:0;accent-color:var(--accent);cursor:pointer}
+.extra-product-toggle .ep-title{font-size:13px;font-family:var(--mono);font-weight:600;color:var(--text)}
+.extra-product-toggle .ep-sub{font-size:11px;color:var(--dim);font-family:var(--mono)}
+.extra-product-toggle .ep-hint{font-size:10px;color:var(--dim);font-family:var(--mono);margin-top:3px;opacity:.7;line-height:1.4}
+/* ── /Extra product toggle cards ── */
 .action-bar{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
 .action-bar .info{font-size:13px;color:var(--dim)}
 .action-bar .info strong{color:var(--text)}
@@ -150,8 +149,8 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .sources h2{font-size:12px;font-weight:600;margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)}
 .source-row{font-size:12px;font-family:var(--mono);margin-bottom:6px;display:flex;align-items:center}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;flex-shrink:0}
-.dot-ok{background:var(--success)}.dot-fail{background:var(--danger)}.dot-pending{background:var(--warn)}.dot-timeout{background:#f97316}
-.source-label{color:var(--dim);width:170px;display:inline-block;flex-shrink:0}
+.dot-ok{background:var(--success)}.dot-fail{background:var(--danger)}.dot-pending{background:var(--warn)}.dot-timeout{background:#f97316}.dot-off{background:var(--border)}
+.source-label{color:var(--dim);width:180px;display:inline-block;flex-shrink:0}
 .sources .footer{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
 .loading{text-align:center;padding:40px 0;color:var(--dim);font-family:var(--mono);font-size:13px}
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin-right:6px;vertical-align:middle}
@@ -162,7 +161,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 #export-modal-inner .modal-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
 #export-modal-inner .modal-header h3{font-size:14px;font-family:var(--mono);color:var(--dim);text-transform:uppercase}
 #export-modal-inner pre{padding:18px;font-size:11px;font-family:var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;overflow:auto;flex:1;line-height:1.5}
-@media(max-width:600px){body{padding:12px 14px}.pill{min-width:80px;padding:8px 10px}.pill .value{font-size:18px}.forecast-row .name{width:80px;font-size:12px}.forecast-row .fwind{display:none}}
+@media(max-width:600px){body{padding:12px 14px}.pill{min-width:80px;padding:8px 10px}.pill .value{font-size:18px}.forecast-row .name{width:80px;font-size:12px}.forecast-row .fwind{display:none}.extra-products-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -170,7 +169,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 <div class="header">
   <div>
     <h1><span class="icon">◈</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.11</span></div>
+    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.14</span></div>
   </div>
   <div class="actions">
     <span class="fetch-time" id="fetch-time"></span>
@@ -201,6 +200,43 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
     <div><label>Hourly Window</label><select id="input-hours" onchange="STATE.hourlyWindow=parseInt(this.value)"><option value="12">12 hours</option><option value="24">24 hours</option><option value="48">48 hours</option><option value="72" selected>72 hours</option></select></div>
     <div><label>Include AFD</label><select id="input-afd" onchange="STATE.afdMode=this.value"><option value="full" selected>Full text</option><option value="summary">Summary (2000 chars)</option><option value="none">None</option></select></div>
   </div>
+
+  <div class="section-label">Additional NWS Products <span style="font-size:10px;font-weight:400;opacity:.5;text-transform:none;letter-spacing:0">(opt-in · re-fetch to apply)</span></div>
+  <div class="extra-products-grid">
+    <label class="extra-product-toggle">
+      <input type="checkbox" id="toggle-ero" onchange="STATE.extraProducts.ero=this.checked">
+      <div>
+        <div class="ep-title">WPC ERO</div>
+        <div class="ep-sub">Excessive Rainfall Outlook</div>
+        <div class="ep-hint">Risk categories (Marginal/Slight/Enhanced/High) from WPC forecasters. Independent QPF assessment — sometimes diverges from local AFD.</div>
+      </div>
+    </label>
+    <label class="extra-product-toggle">
+      <input type="checkbox" id="toggle-mpd" onchange="STATE.extraProducts.mpd=this.checked">
+      <div>
+        <div class="ep-title">WPC MPD</div>
+        <div class="ep-sub">Mesoscale Precip Discussion</div>
+        <div class="ep-hint">Issued in real time during active events — often before the local AFD is updated. Highest signal for training scenarios.</div>
+      </div>
+    </label>
+    <label class="extra-product-toggle">
+      <input type="checkbox" id="toggle-lsr" onchange="STATE.extraProducts.lsr=this.checked">
+      <div>
+        <div class="ep-title">LSR</div>
+        <div class="ep-sub">Local Storm Reports</div>
+        <div class="ep-hint">Ground truth from spotters and automated stations during active events. Real-time rainfall totals as a band approaches.</div>
+      </div>
+    </label>
+    <label class="extra-product-toggle">
+      <input type="checkbox" id="toggle-asosPrecip" onchange="STATE.extraProducts.asosPrecip=this.checked">
+      <div>
+        <div class="ep-title">ASOS Hourly Precip</div>
+        <div class="ep-sub">Station accumulation obs</div>
+        <div class="ep-hint">Actual measured rainfall at the NWS obs station. 24h history. Ground truth anchor during events instead of relying on forecast grids.</div>
+      </div>
+    </label>
+  </div>
+
   <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">
     <button class="btn btn-primary" onclick="fetchAllNodes()" style="padding:8px 20px;font-size:13px">⟳ Apply & Re-fetch All</button>
     <span style="font-size:11px;color:var(--dim);font-family:var(--mono)">Re-fetches all nodes with current settings</span>
@@ -236,7 +272,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.13-2026-03-29";
+var VERSION="4.14-2026-04-03";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -246,16 +282,25 @@ var PRESETS=[
 ];
 var ROLE_LABELS={home_base:"Home Base",destination:"Destination",connection:"Connection",run_location:"Run Location"};
 var ROLE_CLASSES={home_base:"role-home",destination:"role-dest",connection:"role-conn",run_location:"role-run"};
-var STATE={nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",nws:null,uv:null,climate:null,errors:[],timeouts:[],status:"idle"}],hourlyWindow:72,afdMode:"full",fetchTime:null,activeTab:"n0",nextId:1};
+var STATE={
+  nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",nws:null,uv:null,climate:null,ero:null,mpd:null,lsr:null,asosPrecip:null,errors:[],timeouts:[],status:"idle"}],
+  hourlyWindow:72,
+  afdMode:"full",
+  fetchTime:null,
+  activeTab:"n0",
+  nextId:1,
+  extraProducts:{ero:false,mpd:false,lsr:false,asosPrecip:false}
+};
 
 // ─── Timeout constants (ms) ──────────────────────────────
-var TIMEOUT_NWS_POINTS   = 12000;  // /points endpoint — occasionally slow
-var TIMEOUT_NWS_FORECAST = 12000;  // forecast + hourly + stations + alerts
-var TIMEOUT_NWS_OBS      =  8000;  // single METAR observation — should be fast
-var TIMEOUT_NWS_AFD      = 10000;  // AFD list + fetch — two chained requests, slow
-var TIMEOUT_OPEN_METEO   = 12000;  // Open-Meteo hourly/daily
-var TIMEOUT_CLIMATE      = 20000;  // Open-Meteo archive API — 10yr daily fetch, typically ~200ms but allow headroom
-var TIMEOUT_GEOCODE      = 10000;  // Nominatim reverse/forward geocode
+var TIMEOUT_NWS_POINTS   = 12000;
+var TIMEOUT_NWS_FORECAST = 12000;
+var TIMEOUT_NWS_OBS      =  8000;
+var TIMEOUT_NWS_AFD      = 10000;
+var TIMEOUT_OPEN_METEO   = 12000;
+var TIMEOUT_CLIMATE      = 20000;
+var TIMEOUT_GEOCODE      = 10000;
+var TIMEOUT_EXTRA        = 12000;  // ERO, MPD, LSR, ASOS extra product fetches
 
 // ─── Helpers ────────────────────────────────────────────
 function ts(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true,timeZoneName:"short"})}
@@ -265,16 +310,13 @@ function cToF(c){return c!=null?Math.round(c*9/5+32):null}
 function mpsToMph(m){return m!=null?Math.round(m*2.237):null}
 function mToMi(m){return m!=null?Math.round(m/1609.34*10)/10:null}
 function paToInHg(p){return p!=null?Math.round(p/3386.39*100)/100:null}
+function mmToIn(v){return v!=null?Math.round(v/25.4*100)/100:null}
 function vv(x){return x!=null&&x!==undefined?x:"—"}
 function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
 function pad2(n){return String(n).padStart(2,"0")}
 function fmtTimeShort(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{hour:"numeric",minute:"2-digit",hour12:true})}
 
-// ─── Fetch with timeout (v4.11 — core fix) ──────────────
-// Returns a promise that rejects with a named timeout error after `ms` ms.
-// Uses AbortController so the underlying TCP connection is actually cancelled —
-// not just abandoned client-side. This prevents connection pool exhaustion on
-// repeated fetches when NWS is hanging.
+// ─── Fetch with timeout ──────────────────────────────────
 function fetchWithTimeout(url, options, ms) {
   var controller = new AbortController();
   var timer = setTimeout(function() { controller.abort(); }, ms);
@@ -359,9 +401,7 @@ function barChart(labels,highs,lows){
   return svg;
 }
 
-// ─── API ────────────────────────────────────────────────
-// All NWS calls route through fetchWithTimeout — bare fetch() no longer used for API calls.
-
+// ─── Core API ────────────────────────────────────────────
 function nwsFetch(url, timeoutMs) {
   var ms = timeoutMs || TIMEOUT_NWS_FORECAST;
   return fetchWithTimeout(url, {
@@ -377,11 +417,9 @@ function nwsFetch(url, timeoutMs) {
 }
 
 function fetchNodeNWS(lat, lon) {
-  // Step 1: /points — get grid metadata
   return nwsFetch("https://api.weather.gov/points/" + lat + "," + lon, TIMEOUT_NWS_POINTS)
     .then(function(pts) {
       var p = pts.properties;
-      // Step 2: parallel forecast requests — each independently timed out
       var forecP  = nwsFetch(p.forecast, TIMEOUT_NWS_FORECAST);
       var hourlyP = nwsFetch(p.forecastHourly, TIMEOUT_NWS_FORECAST);
       var stnsP   = nwsFetch(p.observationStations, TIMEOUT_NWS_FORECAST);
@@ -407,7 +445,6 @@ function fetchNodeNWS(lat, lon) {
           afdTimedOut: false
         };
 
-        // Observation: short timeout, non-blocking — stale or missing obs is fine
         var obsP = stId
           ? nwsFetch(
               "https://api.weather.gov/stations/" + stId + "/observations/latest",
@@ -420,7 +457,6 @@ function fetchNodeNWS(lat, lon) {
               })
           : Promise.resolve();
 
-        // AFD: two chained requests, given dedicated timeout each
         var afdP = nwsFetch(
           "https://api.weather.gov/products/types/AFD/locations/" + p.gridId,
           TIMEOUT_NWS_AFD
@@ -443,7 +479,6 @@ function fetchNodeNWS(lat, lon) {
     });
 }
 
-// Open-Meteo — single request, straightforward timeout
 function fetchNodeUV(lat, lon) {
   var params = new URLSearchParams({
     latitude: lat,
@@ -467,11 +502,6 @@ function fetchNodeUV(lat, lon) {
 }
 
 // ─── Climate Normals — Open-Meteo Historical Archive (ERA5) ─────────────────
-// Direct browser fetch — no token, no CORS issues, no proxy needed.
-// Fetches 10 years of daily data (2015–2024) and computes normals locally.
-// Returns:
-//   months[]      — 12 monthly average normals (for climate table)
-//   today_window  — 7-day rolling window centered on today (for Δ forecast column)
 var CLIMATE_ARCHIVE_BASE = "https://archive-api.open-meteo.com/v1/archive";
 
 function fetchNodeClimate(lat, lon) {
@@ -509,9 +539,6 @@ function fetchNodeClimate(lat, lon) {
     }
     function r2(v){return v!=null?Math.round(v*100)/100:null;}
 
-    // ── Monthly averages for the climate table ────────────────────────────────
-    // Precip: sum daily values per month-year, then average those monthly totals.
-    // High/low: simple average of all daily values within each month.
     var byMonth = {};
     var monthYearPrecip = {};
     for (var m = 1; m <= 12; m++) byMonth[m] = {tmax:[], tmin:[]};
@@ -526,7 +553,6 @@ function fetchNodeClimate(lat, lon) {
       if (precipA[i] != null) monthYearPrecip[mpKey].total += precipA[i];
     }
 
-    // Average monthly precip totals across years
     var monthPrecipSums = {};
     for (var key in monthYearPrecip) {
       var mo2 = monthYearPrecip[key].month;
@@ -545,22 +571,18 @@ function fetchNodeClimate(lat, lon) {
         normal_high_f:    avg(byMonth[m].tmax),
         normal_low_f:     avg(byMonth[m].tmin),
         normal_precip_in: avgPrecip,
-        normal_snow_in:   null  // ERA5 archive doesn't surface snowfall by default
+        normal_snow_in:   null
       });
     }
 
-    // ── 7-day rolling window centered on today (±3 days, cross-year) ─────────
-    // ~80 data points — used for Δ normal in the forecast row delta column.
     var now    = new Date();
     var todayMo = now.getMonth() + 1;
     var todayDa = now.getDate();
 
-    // Build a set of (month, day) pairs in the ±3 window using a fixed leap year
-    // so Feb 28/29 edge cases resolve cleanly.
     var winPairs = [];
     for (var offset = -3; offset <= 3; offset++) {
-      var probe = new Date(2024, todayMo - 1, todayDa + offset); // 2024 = leap year
-      winPairs.push(probe.getMonth() * 100 + probe.getDate()); // packed key
+      var probe = new Date(2024, todayMo - 1, todayDa + offset);
+      winPairs.push(probe.getMonth() * 100 + probe.getDate());
     }
     var winSet = {};
     winPairs.forEach(function(k){ winSet[k] = true; });
@@ -577,7 +599,7 @@ function fetchNodeClimate(lat, lon) {
     }
 
     var todayWindow = null;
-    if (winTmax.length >= 5) { // require at least 5 points to publish
+    if (winTmax.length >= 5) {
       todayWindow = {
         center: (todayMo < 10?"0":"")+todayMo+"-"+(todayDa<10?"0":"")+todayDa,
         sample_size:     winTmax.length,
@@ -587,7 +609,6 @@ function fetchNodeClimate(lat, lon) {
       };
     }
 
-    // Station label uses ERA5 grid point coordinates returned by API
     var gridLat = d.latitude  != null ? d.latitude.toFixed(2)  : lat.toFixed(2);
     var gridLon = d.longitude != null ? d.longitude.toFixed(2) : lon.toFixed(2);
 
@@ -603,6 +624,93 @@ function fetchNodeClimate(lat, lon) {
   }).catch(function(e) {
     console.log("[WS] Climate error:", e.message);
     return null;
+  });
+}
+
+// ─── Extra NWS Products ──────────────────────────────────
+// WPC ERO — Excessive Rainfall Outlook (Day 1)
+// National product from Weather Prediction Center. Risk categories (Marginal/
+// Slight/Enhanced/High) are formal signals from WPC forecasters that training
+// risk exists in an area. Independent from local NWS office AFD.
+function fetchERO() {
+  return nwsFetch("https://api.weather.gov/products/types/ERO/locations/WPC", TIMEOUT_EXTRA)
+    .then(function(list) {
+      var id = list["@graph"] && list["@graph"][0] ? list["@graph"][0].id : null;
+      if (!id) return null;
+      return nwsFetch("https://api.weather.gov/products/" + id, TIMEOUT_EXTRA)
+        .then(function(p) {
+          var text = p.productText || "";
+          // Parse risk level mentions from product text
+          var risks = [];
+          var riskRe = /(HIGH|ENHANCED|SLIGHT|MARGINAL)\s+RISK/gi;
+          var m;
+          while ((m = riskRe.exec(text)) !== null) {
+            var r = m[1].toUpperCase();
+            if (risks.indexOf(r) === -1) risks.push(r);
+          }
+          var riskOrder = { HIGH: 4, ENHANCED: 3, SLIGHT: 2, MARGINAL: 1 };
+          risks.sort(function(a, b) { return (riskOrder[b]||0) - (riskOrder[a]||0); });
+          return { text: text, issued: p.issuanceTime, risks: risks };
+        });
+    });
+}
+
+// WPC MPD — Mesoscale Precipitation Discussion
+// Issued in real time during active events, often before the local AFD is
+// updated. Fetch up to 3 most recent so active events show the full thread.
+function fetchMPD() {
+  return nwsFetch("https://api.weather.gov/products/types/MPD/locations/WPC", TIMEOUT_EXTRA)
+    .then(function(list) {
+      var items = list["@graph"] || [];
+      if (!items.length) return [];
+      return Promise.all(items.slice(0, 3).map(function(item) {
+        return nwsFetch("https://api.weather.gov/products/" + item.id, TIMEOUT_EXTRA)
+          .then(function(p) {
+            return { text: p.productText, issued: p.issuanceTime, id: item.id };
+          }).catch(function() { return null; });
+      })).then(function(res) { return res.filter(Boolean); });
+    });
+}
+
+// LSR — Local Storm Reports
+// Ground truth from spotters/automated stations. Requires the NWS office ID
+// from the /points response, so called after NWS data resolves.
+function fetchLSR(officeId) {
+  return nwsFetch("https://api.weather.gov/products/types/LSR/locations/" + officeId, TIMEOUT_EXTRA)
+    .then(function(list) {
+      var items = list["@graph"] || [];
+      if (!items.length) return null;
+      return nwsFetch("https://api.weather.gov/products/" + items[0].id, TIMEOUT_EXTRA)
+        .then(function(p) {
+          return { text: p.productText, issued: p.issuanceTime, office: officeId };
+        });
+    });
+}
+
+// ASOS Hourly Precip — measured rainfall at the NWS obs station
+// Fetches last 24 observations, extracts precip accumulations (1hr/3hr/6hr),
+// converts from mm to inches. Requires station ID from NWS data.
+function fetchASOSPrecip(stationId) {
+  return nwsFetch(
+    "https://api.weather.gov/stations/" + stationId + "/observations?limit=24",
+    TIMEOUT_NWS_FORECAST
+  ).then(function(data) {
+    var features = data.features || [];
+    var obs = features.map(function(f) {
+      var p = f.properties;
+      return {
+        timestamp:     p.timestamp,
+        precip_1hr_in: mmToIn(p.precipitationLastHour   ? p.precipitationLastHour.value   : null),
+        precip_3hr_in: mmToIn(p.precipitationLast3Hours ? p.precipitationLast3Hours.value  : null),
+        precip_6hr_in: mmToIn(p.precipitationLast6Hours ? p.precipitationLast6Hours.value  : null),
+        temp_f:        cToF(p.temperature ? p.temperature.value : null),
+        sky:           p.textDescription || null
+      };
+    }).filter(function(o) {
+      // Only return rows that have any precip field (even zero is useful)
+      return o.precip_1hr_in !== null || o.precip_3hr_in !== null || o.precip_6hr_in !== null;
+    });
+    return { station: stationId, observations: obs };
   });
 }
 
@@ -631,7 +739,7 @@ function addNode(){
   resolveLocation(input).then(function(loc){
     if(!loc)return;
     var id="n"+(STATE.nextId++);
-    STATE.nodes.push({id:id,label:loc.label,lat:loc.lat,lon:loc.lon,role:role,nws:null,uv:null,climate:null,errors:[],timeouts:[],status:"idle"});
+    STATE.nodes.push({id:id,label:loc.label,lat:loc.lat,lon:loc.lon,role:role,nws:null,uv:null,climate:null,ero:null,mpd:null,lsr:null,asosPrecip:null,errors:[],timeouts:[],status:"idle"});
     document.getElementById("input-location").value="";
     renderNodeList();renderTabs();
     fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);
@@ -641,13 +749,16 @@ function removeNode(id){STATE.nodes=STATE.nodes.filter(function(n){return n.id!=
 function addPreset(i){
   var p=PRESETS[i];
   if(STATE.nodes.some(function(n){return Math.abs(n.lat-p.lat)<0.01&&Math.abs(n.lon-p.lon)<0.01})){document.getElementById("geocode-status").style.color="var(--warn)";document.getElementById("geocode-status").textContent="Already added: "+p.label;return}
-  var id="n"+(STATE.nextId++);STATE.nodes.push({id:id,label:p.label,lat:p.lat,lon:p.lon,role:p.role,nws:null,uv:null,climate:null,errors:[],timeouts:[],status:"idle"});
+  var id="n"+(STATE.nextId++);STATE.nodes.push({id:id,label:p.label,lat:p.lat,lon:p.lon,role:p.role,nws:null,uv:null,climate:null,ero:null,mpd:null,lsr:null,asosPrecip:null,errors:[],timeouts:[],status:"idle"});
   renderNodeList();renderTabs();fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);
 }
 
 // ─── Fetch ──────────────────────────────────────────────
 function fetchSingleNode(node){
-  node.status="loading";node.errors=[];node.timeouts=[];node.climate=null;renderNodeList();renderTabs();
+  node.status="loading";
+  node.errors=[];node.timeouts=[];
+  node.climate=null;node.ero=null;node.mpd=null;node.lsr=null;node.asosPrecip=null;
+  renderNodeList();renderTabs();
 
   var nwsP = fetchNodeNWS(node.lat, node.lon)
     .then(function(d) { node.nws = d; })
@@ -671,7 +782,46 @@ function fetchSingleNode(node){
     .then(function(d) { node.climate = d; })
     .catch(function() { node.climate = null; });
 
+  // Main data first — extra products that need office/station ID run after
   return Promise.all([nwsP, uvP, climateP]).then(function() {
+    var extraPromises = [];
+
+    if (STATE.extraProducts.ero) {
+      extraPromises.push(
+        fetchERO()
+          .then(function(d) { node.ero = d; })
+          .catch(function(e) { node.errors.push("ERO: " + e.message); })
+      );
+    }
+
+    if (STATE.extraProducts.mpd) {
+      extraPromises.push(
+        fetchMPD()
+          .then(function(d) { node.mpd = d; })
+          .catch(function(e) { node.errors.push("MPD: " + e.message); })
+      );
+    }
+
+    // LSR requires office ID from NWS /points response
+    if (STATE.extraProducts.lsr && node.nws && node.nws.office) {
+      extraPromises.push(
+        fetchLSR(node.nws.office)
+          .then(function(d) { node.lsr = d; })
+          .catch(function(e) { node.errors.push("LSR: " + e.message); })
+      );
+    }
+
+    // ASOS precip requires station ID from NWS /points response
+    if (STATE.extraProducts.asosPrecip && node.nws && node.nws.stationId) {
+      extraPromises.push(
+        fetchASOSPrecip(node.nws.stationId)
+          .then(function(d) { node.asosPrecip = d; })
+          .catch(function(e) { node.errors.push("ASOS Precip: " + e.message); })
+      );
+    }
+
+    return Promise.all(extraPromises);
+  }).then(function() {
     node.status = (node.nws || node.uv) ? "ready" : "error";
     renderNodeList();renderTabs();renderActivePanel();updateActionBar();
   });
@@ -759,17 +909,26 @@ function buildExportPayload(){
       open_meteo_hourly:omHourly,open_meteo_daily:omDaily,astronomy:astronomy,
       climate_normals:node.climate||null,alerts:alerts,
       afd:afdText?{office:nws.office,issued:nws.afdTime,mode:STATE.afdMode,text:afdText}:null,
+      // Extra NWS products (null when not fetched)
+      wpc_ero:     node.ero     || null,
+      wpc_mpd:     node.mpd     || null,
+      lsr:         node.lsr     || null,
+      asos_precip: node.asosPrecip || null,
       source_freshness:{
         observations:obs?obs.timestamp:null,
         hourly_forecast:nws?nws.hourlyUpdated:null,
         seven_day_forecast:nws?nws.forecastUpdated:null,
         afd:nws?nws.afdTime:null,
         open_meteo:now.toISOString(),
-        climate_normals:node.climate?"Open-Meteo ERA5 2015–2024 (10-year computed average, 7-day window normals)":null
+        climate_normals:node.climate?"Open-Meteo ERA5 2015–2024 (10-year computed average, 7-day window normals)":null,
+        wpc_ero:    node.ero    ? node.ero.issued : null,
+        wpc_mpd:    node.mpd && node.mpd.length ? node.mpd[0].issued : null,
+        lsr:        node.lsr    ? node.lsr.issued : null,
+        asos_precip:node.asosPrecip ? now.toISOString() : null
       }
     };
   });
-  return{_format:"weather-station-export-v2",_generated:now.toISOString(),_note:"Paste this entire block into your Claude weather briefing project. Includes NOAA 1991-2020 climate normals (all 12 months) and astronomical data.",_node_count:nodes.length,nodes:nodes};
+  return{_format:"weather-station-export-v2",_generated:now.toISOString(),_note:"Paste this entire block into your Claude weather briefing project. Includes ERA5 2015-2024 climate normals (all 12 months) and astronomical data.",_node_count:nodes.length,nodes:nodes};
 }
 
 function getExportText(){
@@ -903,8 +1062,6 @@ function renderActivePanel(){
       var fp=nws.forecast[fj],prec=fp.probabilityOfPrecipitation?fp.probabilityOfPrecipitation.value:0;
       var deltaStr="";
       if(node.climate){
-        // Use 7-day rolling window for first ~7 forecast periods (within window range),
-        // monthly normal as fallback for days further out.
         var useWindow = node.climate.today_window && fj < 8;
         var normRef = null;
         if(useWindow){
@@ -930,11 +1087,107 @@ function renderActivePanel(){
     html+='</div></div>';
   }
 
+  // ── AFD ─────────────────────────────────────────────────
   if(nws&&nws.afd){
     var afdId="afd-"+node.id;
     html+='<div style="margin-top:16px"><button class="afd-toggle" onclick="var el=document.getElementById(\''+afdId+'\');el.classList.toggle(\'open\');this.querySelector(\'h2\').textContent=(el.classList.contains(\'open\')?\'▾\':\'▸\')+\' AFD — '+esc(nws.office)+'\'"><h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ AFD — '+esc(nws.office)+'</h2><span class="badge badge-fresh">'+ago(nws.afdTime)+'</span></button><pre class="afd-text" id="'+afdId+'">'+esc(nws.afd)+'</pre></div>';
   }
 
+  // ── WPC ERO ─────────────────────────────────────────────
+  if(node.ero){
+    var eroId="ero-"+node.id;
+    var RISK_COLORS={HIGH:"var(--danger)",ENHANCED:"var(--orange)",SLIGHT:"var(--warn)",MARGINAL:"var(--success)"};
+    var riskBadges=node.ero.risks.map(function(r){
+      var c=RISK_COLORS[r]||"var(--dim)";
+      return'<span class="badge" style="background:'+c+'22;color:'+c+'">'+(r.charAt(0)+r.slice(1).toLowerCase())+'</span>';
+    }).join(" ");
+    html+='<div style="margin-top:16px">';
+    html+='<button class="afd-toggle" onclick="var el=document.getElementById(\''+eroId+'\');el.classList.toggle(\'open\');this.querySelector(\'h2\').textContent=(el.classList.contains(\'open\')?\'▾\':\'▸\')+\' WPC ERO\'">';
+    html+='<h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ WPC ERO</h2>';
+    html+='<span class="badge badge-fresh" style="margin-left:4px">'+ago(node.ero.issued)+'</span>';
+    if(riskBadges)html+='<span style="margin-left:8px">'+riskBadges+'</span>';
+    else html+='<span class="badge" style="background:var(--success)22;color:var(--success);margin-left:8px">No risk areas</span>';
+    html+='</button>';
+    html+='<pre class="afd-text" id="'+eroId+'">'+esc(node.ero.text)+'</pre></div>';
+  } else if(STATE.extraProducts.ero && node.status==="ready"){
+    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)">WPC ERO: unavailable</div>';
+  }
+
+  // ── WPC MPD ─────────────────────────────────────────────
+  if(node.mpd){
+    html+='<div style="margin-top:16px">';
+    html+='<div class="section-header"><h2>WPC MPD</h2>';
+    if(node.mpd.length){
+      html+='<span class="badge" style="background:var(--orange)22;color:var(--orange)">'+node.mpd.length+' discussion'+(node.mpd.length>1?"s":"")+'</span>';
+    } else {
+      html+='<span class="badge badge-fresh">No active discussions</span>';
+    }
+    html+='</div>';
+    node.mpd.forEach(function(m,mi){
+      var mpdId="mpd-"+node.id+"-"+mi;
+      html+='<button class="afd-toggle" onclick="var el=document.getElementById(\''+mpdId+'\');el.classList.toggle(\'open\');this.querySelector(\'.mpd-label\').textContent=(el.classList.contains(\'open\')?\'▾ \':\'▸ \')+\'MPD #'+(mi+1)+'\'">';
+      html+='<span class="mpd-label" style="font-size:13px;font-family:var(--mono);font-weight:600;color:var(--dim)">▸ MPD #'+(mi+1)+'</span>';
+      html+='<span class="badge badge-fresh" style="margin-left:8px">'+ago(m.issued)+'</span>';
+      html+='</button>';
+      html+='<pre class="afd-text" id="'+mpdId+'">'+esc(m.text)+'</pre>';
+    });
+    html+='</div>';
+  } else if(STATE.extraProducts.mpd && node.status==="ready"){
+    html+='<div style="margin-top:12px;font-size:12px;color:var(--success);font-family:var(--mono)">✓ WPC MPD: no active discussions</div>';
+  }
+
+  // ── LSR ─────────────────────────────────────────────────
+  if(node.lsr){
+    var lsrId="lsr-"+node.id;
+    html+='<div style="margin-top:16px">';
+    html+='<button class="afd-toggle" onclick="var el=document.getElementById(\''+lsrId+'\');el.classList.toggle(\'open\');this.querySelector(\'h2\').textContent=(el.classList.contains(\'open\')?\'▾\':\'▸\')+\' LSR — '+esc(node.lsr.office)+'\'">';
+    html+='<h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ LSR — '+esc(node.lsr.office)+'</h2>';
+    html+='<span class="badge badge-fresh" style="margin-left:4px">'+ago(node.lsr.issued)+'</span>';
+    html+='</button>';
+    html+='<pre class="afd-text" id="'+lsrId+'">'+esc(node.lsr.text)+'</pre></div>';
+  } else if(STATE.extraProducts.lsr && node.status==="ready"){
+    var lsrUnavailReason = (!node.nws || !node.nws.office) ? "NWS data required" : "unavailable";
+    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)">LSR: '+lsrUnavailReason+'</div>';
+  }
+
+  // ── ASOS Hourly Precip ──────────────────────────────────
+  if(node.asosPrecip){
+    var precObs=node.asosPrecip.observations;
+    html+='<div style="margin-top:16px">';
+    html+='<div class="section-header"><h2>ASOS Precip</h2>';
+    html+='<span class="badge badge-fresh">'+precObs.length+' obs w/ precip data</span>';
+    html+='<span class="meta">'+esc(node.asosPrecip.station)+'</span>';
+    html+='</div>';
+    if(precObs.length){
+      html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px">';
+      html+='<table class="climate-table"><thead><tr>';
+      html+='<th style="text-align:left">Time</th><th>1hr</th><th>3hr</th><th>6hr</th><th style="text-align:left">Sky</th>';
+      html+='</tr></thead><tbody>';
+      precObs.forEach(function(o){
+        var hasNonZero=(o.precip_1hr_in>0||o.precip_3hr_in>0||o.precip_6hr_in>0);
+        var rowStyle=hasNonZero?' style="background:rgba(96,165,250,.06)"':'';
+        html+='<tr'+rowStyle+'>';
+        html+='<td style="text-align:left">'+ts(o.timestamp)+'</td>';
+        html+='<td style="color:'+(o.precip_1hr_in>0?"var(--accent)":"inherit")+'">'+
+          (o.precip_1hr_in!=null?(o.precip_1hr_in>0?o.precip_1hr_in+'"':'trace'):'—')+'</td>';
+        html+='<td>'+(o.precip_3hr_in!=null?o.precip_3hr_in+'"':'—')+'</td>';
+        html+='<td>'+(o.precip_6hr_in!=null?o.precip_6hr_in+'"':'—')+'</td>';
+        html+='<td style="text-align:left;color:var(--dim)">'+esc(o.sky||'')+'</td>';
+        html+='</tr>';
+      });
+      html+='</tbody></table>';
+      html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">Precip values converted from mm. Rows with measured accumulation highlighted.</div>';
+      html+='</div>';
+    } else {
+      html+='<div style="font-size:12px;color:var(--dim);font-family:var(--mono);padding:8px 0">No precipitation recorded in last 24 observations.</div>';
+    }
+    html+='</div>';
+  } else if(STATE.extraProducts.asosPrecip && node.status==="ready"){
+    var asosUnavailReason = (!node.nws || !node.nws.stationId) ? "NWS data required" : "unavailable";
+    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)">ASOS Precip: '+asosUnavailReason+'</div>';
+  }
+
+  // ── Climate Normals ─────────────────────────────────────
   if(node.climate&&node.climate.months){
     var cl=node.climate;
     var nowMonth=new Date().getMonth()+1;
@@ -968,12 +1221,18 @@ function renderActivePanel(){
     html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)"><span class="spinner"></span> Loading climate normals…</div>';
   }
 
-  // Sources — now shows timeout state distinctly from hard failure
+  // ── Sources ─────────────────────────────────────────────
   var sObs=nws&&nws.observation;var sTime=sObs?sObs.timestamp:null;
   var sUV=null;if(uv&&uv.hourly){var nowH2=new Date().toISOString().slice(0,13);for(var si=0;si<(uv.hourly.time||[]).length;si++){if(uv.hourly.time[si].indexOf(nowH2)===0){sUV=uv.hourly.uv_index[si];break}}}
   var hasAstro=uv&&uv.daily&&uv.daily.sunrise&&uv.daily.sunrise.length>0;
   var obsTimedOut=nws&&nws.obsTimedOut;
   var afdTimedOut=nws&&nws.afdTimedOut;
+
+  var eroLabel   = node.ero ? (node.ero.risks.length ? node.ero.risks.join(", ") : "No risk areas") + " · " + ts(node.ero.issued) : STATE.extraProducts.ero ? "unavailable" : "not fetched";
+  var mpdLabel   = node.mpd ? (node.mpd.length ? node.mpd.length+" discussion(s) · "+ago(node.mpd[0].issued) : "no active discussions") : STATE.extraProducts.mpd ? "unavailable" : "not fetched";
+  var lsrLabel   = node.lsr ? ts(node.lsr.issued)+" ("+ago(node.lsr.issued)+")" : STATE.extraProducts.lsr ? "unavailable" : "not fetched";
+  var asosLabel  = node.asosPrecip ? node.asosPrecip.observations.length+" obs · "+node.asosPrecip.station : STATE.extraProducts.asosPrecip ? "unavailable" : "not fetched";
+
   html+='<div class="sources"><h2>Sources — '+esc(node.label)+'</h2>'+
     srcRow(!!sObs, obsTimedOut, "Observations", sObs?ts(sTime)+" ("+ago(sTime)+")":obsTimedOut?"timed out ("+TIMEOUT_NWS_OBS/1000+"s)":"unavailable", nws&&nws.stationId?" · "+nws.stationId:"")+
     srcRow(nws&&nws.hourly&&nws.hourly.length>0, false, "Hourly Forecast", nws&&nws.hourlyUpdated?ts(nws.hourlyUpdated)+" ("+ago(nws.hourlyUpdated)+")":"unavailable")+
@@ -983,20 +1242,30 @@ function renderActivePanel(){
     srcRow(sUV!=null, false, "Open-Meteo UV", sUV!=null?"UV "+Math.round(sUV*10)/10:"unavailable")+
     srcRow(hasAstro, false, "Astronomy (daily)", "Sunrise/sunset · 7-day · Open-Meteo")+
     srcRow(!!node.climate, false, "Climate Normals", node.climate?"ERA5 "+node.climate.period+" · "+node.climate.station_name+(node.climate.today_window?" · window: "+node.climate.today_window.normal_high_f+"°/"+node.climate.today_window.normal_low_f+"°F":""):"unavailable")+
-    '<div class="footer">Live → api.weather.gov + api.open-meteo.com · Climate → archive-api.open-meteo.com (ERA5 2015–2024, 7-day window normals) · Timeouts: NWS '+TIMEOUT_NWS_POINTS/1000+'s, Open-Meteo '+TIMEOUT_OPEN_METEO/1000+'s, Climate '+TIMEOUT_CLIMATE/1000+'s</div></div>';
+    srcRowExtra(node.ero, STATE.extraProducts.ero, "WPC ERO", eroLabel)+
+    srcRowExtra(node.mpd, STATE.extraProducts.mpd, "WPC MPD", mpdLabel)+
+    srcRowExtra(node.lsr, STATE.extraProducts.lsr, "LSR — "+((nws&&nws.office)||"?"), lsrLabel)+
+    srcRowExtra(node.asosPrecip, STATE.extraProducts.asosPrecip, "ASOS Precip", asosLabel)+
+    '<div class="footer">Live → api.weather.gov + api.open-meteo.com · Climate → archive-api.open-meteo.com (ERA5 2015–2024, 7-day window normals) · Extra products → api.weather.gov/products · Timeouts: NWS '+TIMEOUT_NWS_POINTS/1000+'s, Open-Meteo '+TIMEOUT_OPEN_METEO/1000+'s, Climate '+TIMEOUT_CLIMATE/1000+'s, Extra '+TIMEOUT_EXTRA/1000+'s</div></div>';
 
   panel.innerHTML=html;
 }
+
 function pill(l,val,u,s){return'<div class="pill"><div class="label">'+l+'</div><div class="value">'+val+'<span class="unit">'+u+'</span></div>'+(s?'<div class="sub">'+s+'</div>':'')+'</div>'}
 
-// Updated srcRow: ok=data present, timedOut=request timed out (orange vs red)
+// ok=data present, timedOut=request timed out (orange dot)
 function srcRow(ok, timedOut, l, info, extra){
   var dotClass = ok ? "dot-ok" : timedOut ? "dot-timeout" : "dot-fail";
   return'<div class="source-row"><span class="dot '+dotClass+'"></span><span class="source-label">'+l+'</span><span>'+info+(extra||"")+'</span></div>'
 }
 
+// Extra product row: dot-ok if data present, dot-off if not fetched (toggle off), dot-fail if fetched but empty
+function srcRowExtra(data, enabled, l, info){
+  var dotClass = data ? "dot-ok" : enabled ? "dot-fail" : "dot-off";
+  return'<div class="source-row"><span class="dot '+dotClass+'"></span><span class="source-label">'+l+'</span><span style="color:'+(enabled?"inherit":"var(--dim)")+'">'+info+'</span></div>'
+}
+
 // ─── UI ─────────────────────────────────────────────────
-// Settings panel is always visible in v4.12 — toggleSettings removed
 document.getElementById("input-location").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();addNode()}});
 
 // ─── Init ───────────────────────────────────────────────
