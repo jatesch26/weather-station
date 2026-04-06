@@ -4,34 +4,25 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
-<meta name="version" content="4.14-2026-04-03">
-<!-- Weather Station v4.14 | Last updated: 2026-04-03 -->
 <!--
-  v4.14 changes:
-  - Added opt-in Additional NWS Products panel in settings.
-  - WPC ERO (Excessive Rainfall Outlook): fetches latest Day 1 ERO text product
-    from WPC via NWS API products endpoint. Parses risk levels (Marginal/Slight/
-    Enhanced/High) from product text and surfaces them as color-coded badges.
-    Displayed as collapsible block below AFD. Included in export payload.
-  - WPC MPD (Mesoscale Precipitation Discussion): fetches up to 3 most recent
-    MPDs from WPC. Each displayed as collapsible block. Empty state shown when
-    no active discussions. Included in export payload.
-  - LSR (Local Storm Reports): fetches most recent LSR from the node's NWS office.
-    Requires NWS data to be available (office ID from /points response).
-    Displayed as collapsible block. Included in export payload.
-  - ASOS Hourly Precip: fetches last 24 observations from the node's NWS obs
-    station. Extracts precipitationLastHour/3Hr/6Hr values, converts mm→inches,
-    renders as a table with non-zero rows highlighted. Included in export payload.
-  - Extra product fetches run after the main Promise.all resolves (NWS office ID
-    and station ID needed for LSR/ASOS). All extra fetches are individually
-    error-isolated so a failed ERO doesn't block MPD, etc.
-  - SOURCE PANEL updated: extra product rows shown when those products are enabled,
-    with "not fetched" state when toggle is off.
-  - CSS: .extra-product-toggle label style for checkbox cards.
+  v4.17 changes
+  BUG1 FIX: ECMWF hourly triplet — each 3hr-native value was replicated into 3 slots,
+    causing 3x overcount. Fixed with stride-3 in rendering AND zero-fill in export.
+  BUG3 MITIGATION: OM daily precip_model_warning flag on any forecast day > 2.0".
+    GFS/ICON best_match has known 2-7x convective bias in stalled-front scenarios.
+  NEW: NWS Gridpoint QPF (always-on, US nodes) — quantitativePrecipitation,
+    probabilityOfThunder, snowfallAmount, iceAccumulation from /gridpoints/{cwa}/{x,y}.
+    Same source as NWS hourly chart. Exported as nws_gridpoint_qpf.
+  NEW: Open-Meteo Air Quality (opt-in) — US AQI, PM2.5, PM10, ozone, dust, 3-day.
+  NEW: SPC Convective Outlook (opt-in) — Day 1+2 SWODY1/SWODY2, categorical risk.
+  NEW: NWS HWO (opt-in) — Hazardous Weather Outlook, 7-day threat summary.
+  NEW: OM daily free-rider vars (always-on, zero extra cost) — uv_index_max,
+    apparent_temperature_max/min, precipitation_probability_max,
+    wind_direction_10m_dominant, shortwave_radiation_sum.
 -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0f1117;--card:#181b23;--border:#2a2d38;--text:#e8e9ed;--dim:#6b7084;--accent:#60a5fa;--warn:#fbbf24;--danger:#f87171;--success:#4ade80;--purple:#a78bfa;--orange:#f97316;--mono:'JetBrains Mono','SF Mono','Fira Code',monospace;--body:'DM Sans','Helvetica Neue',sans-serif}
+:root{--bg:#0f1117;--card:#181b23;--border:#2a2d38;--text:#e8e9ed;--dim:#6b7084;--accent:#60a5fa;--warn:#fbbf24;--danger:#f87171;--success:#4ade80;--purple:#a78bfa;--orange:#f97316;--mono:'JetBrains Mono','SF Mono',monospace;--body:'DM Sans','Helvetica Neue',sans-serif}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:1.5;padding:20px 24px;min-height:100vh}
 .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px}
@@ -40,20 +31,18 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .header .sub{font-size:12px;color:var(--dim);font-family:var(--mono);margin-top:2px}
 .header .actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .btn{border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;font-family:var(--mono);transition:opacity .15s}
-.btn:hover{opacity:.85}
+.btn:hover{opacity:.85}.btn:disabled{opacity:.4;cursor:wait}
 .btn-primary{background:var(--accent);color:#0f1117}
 .btn-secondary{background:var(--card);color:var(--dim);border:1px solid var(--border)}
 .btn-export{background:var(--success);color:#0f1117;font-size:13px;padding:8px 18px}
 .btn-danger{background:transparent;color:var(--danger);border:1px solid var(--danger);padding:4px 10px;font-size:11px}
 .btn-sm{padding:4px 10px;font-size:11px}
-.btn:disabled{opacity:.4;cursor:wait}
 .fetch-time{font-size:11px;color:var(--dim);font-family:var(--mono)}
-.settings{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px;display:block}
+.settings{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px}
 .section-label{font-size:12px;color:var(--accent);font-family:var(--mono);font-weight:600;margin:12px 0 8px;text-transform:uppercase;letter-spacing:.05em}
 .section-label:first-child{margin-top:0}
 .settings label{font-size:11px;color:var(--dim);display:block;margin-bottom:4px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em}
 .settings input,.settings select{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 10px;font-family:var(--mono);font-size:13px}
-.settings select{min-width:120px}
 .hint{font-size:10px;color:var(--dim);font-family:var(--mono);margin-top:4px;opacity:.7}
 .node-list{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
 .node-item{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 12px}
@@ -68,15 +57,13 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .presets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .preset-btn{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--dim);padding:4px 10px;cursor:pointer;font-size:11px;font-family:var(--mono);transition:all .15s}
 .preset-btn:hover{border-color:var(--accent);color:var(--accent)}
-/* ── Extra product toggle cards ── */
-.extra-products-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;margin-bottom:4px}
-.extra-product-toggle{display:flex;gap:10px;align-items:flex-start;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;cursor:pointer;transition:border-color .15s;text-transform:none!important;letter-spacing:0!important;font-size:inherit!important;color:inherit!important;margin:0!important}
-.extra-product-toggle:hover{border-color:var(--accent)}
-.extra-product-toggle input[type=checkbox]{margin-top:2px;flex-shrink:0;accent-color:var(--accent);cursor:pointer}
-.extra-product-toggle .ep-title{font-size:13px;font-family:var(--mono);font-weight:600;color:var(--text)}
-.extra-product-toggle .ep-sub{font-size:11px;color:var(--dim);font-family:var(--mono)}
-.extra-product-toggle .ep-hint{font-size:10px;color:var(--dim);font-family:var(--mono);margin-top:3px;opacity:.7;line-height:1.4}
-/* ── /Extra product toggle cards ── */
+.ep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;margin-bottom:4px}
+.ep-toggle{display:flex;gap:10px;align-items:flex-start;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;cursor:pointer;transition:border-color .15s}
+.ep-toggle:hover{border-color:var(--accent)}
+.ep-toggle input[type=checkbox]{margin-top:2px;flex-shrink:0;accent-color:var(--accent);cursor:pointer}
+.ep-title{font-size:13px;font-family:var(--mono);font-weight:600;color:var(--text)}
+.ep-sub{font-size:11px;color:var(--dim);font-family:var(--mono)}
+.ep-hint{font-size:10px;color:var(--dim);font-family:var(--mono);margin-top:3px;opacity:.7;line-height:1.4}
 .action-bar{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
 .action-bar .info{font-size:13px;color:var(--dim)}
 .action-bar .info strong{color:var(--text)}
@@ -107,8 +94,6 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .pill .value{font-size:22px;font-weight:700;font-family:var(--mono)}
 .pill .value .unit{font-size:13px;font-weight:400;color:var(--dim)}
 .pill .sub{font-size:11px;color:var(--dim);margin-top:2px}
-.chart-container{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:12px}
-.chart-container h3{font-size:12px;font-family:var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
 .chart-row{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
 .chart-box{flex:1;min-width:280px;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px}
 .chart-box h3{font-size:11px;font-family:var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
@@ -117,73 +102,71 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .hour-card{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 10px;min-width:76px;text-align:center}
 .hour-card.now{background:#60a5fa18;border-color:#60a5fa44}
 .hour-card.day-boundary{border-left:2px solid var(--accent)}
-.hour-card .time{font-size:11px;font-family:var(--mono);color:var(--dim);margin-bottom:4px}
+.hour-card .htime{font-size:11px;font-family:var(--mono);color:var(--dim);margin-bottom:4px}
 .hour-card .day-label{font-size:10px;font-family:var(--mono);color:var(--accent);margin-bottom:2px}
-.hour-card .temp{font-size:18px;font-weight:700;font-family:var(--mono)}
-.hour-card .desc{font-size:10px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:74px}
-.hour-card .wind{font-size:11px;font-family:var(--mono);color:var(--dim);margin-top:4px}
-.hour-card .wind-dir{font-size:10px;font-family:var(--mono);color:var(--dim)}
-.hour-card .precip{font-size:11px;font-family:var(--mono);color:var(--accent);margin-top:4px}
-.uv-low{color:var(--success)}.uv-mod{color:var(--warn)}.uv-high{color:var(--danger)}
+.hour-card .htemp{font-size:18px;font-weight:700;font-family:var(--mono)}
+.hour-card .hdesc{font-size:10px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:74px}
+.hour-card .hwind{font-size:11px;font-family:var(--mono);color:var(--dim);margin-top:4px}
+.hour-card .hprecip{font-size:11px;font-family:var(--mono);color:var(--accent);margin-top:4px}
 .forecast-rows{display:flex;flex-direction:column;gap:4px}
 .forecast-row{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px 14px}
-.forecast-row .name{width:120px;font-weight:600;font-size:13px;font-family:var(--mono);flex-shrink:0}
-.forecast-row .temp{font-size:22px;font-weight:700;font-family:var(--mono);width:60px;text-align:right;flex-shrink:0}
-.forecast-row .temp .unit{font-size:12px;font-weight:400;color:var(--dim)}
+.forecast-row .fname{width:120px;font-weight:600;font-size:13px;font-family:var(--mono);flex-shrink:0}
+.forecast-row .ftemp{font-size:22px;font-weight:700;font-family:var(--mono);width:60px;text-align:right;flex-shrink:0}
+.forecast-row .ftemp .unit{font-size:12px;font-weight:400;color:var(--dim)}
 .forecast-row .fwind{font-size:12px;font-family:var(--mono);color:var(--dim);width:100px;flex-shrink:0}
-.forecast-row .short{font-size:12px;color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.forecast-row .fshort{font-size:12px;color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .afd-toggle{background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:8px}
 .afd-text{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:14px;margin-top:8px;font-size:12px;font-family:var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:400px;overflow:auto;line-height:1.6;display:none}
 .afd-text.open{display:block}
 .astro-bar{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:8px 14px;margin-top:8px;font-size:12px;font-family:var(--mono);color:var(--dim);display:flex;gap:16px;flex-wrap:wrap;align-items:center}
-.astro-bar .astro-item{display:flex;align-items:center;gap:5px}
-.astro-bar .astro-val{color:var(--text);font-weight:600}
+.astro-item{display:flex;align-items:center;gap:5px}
+.astro-val{color:var(--text);font-weight:600}
 .climate-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
 .climate-table th{padding:7px 12px;text-align:right;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:600;border-bottom:1px solid var(--border)}
 .climate-table th:first-child{text-align:left}
 .climate-table td{padding:7px 12px;text-align:right;border-bottom:1px solid var(--border)}
 .climate-table td:first-child{text-align:left}
-.climate-table tr.current-month{background:rgba(96,165,250,.06)}
-.climate-table tr.dim-month td{color:var(--dim)}
+.climate-table tr.cur{background:rgba(96,165,250,.06)}
+.climate-table tr.dimr td{color:var(--dim)}
 .sources{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-top:16px}
 .sources h2{font-size:12px;font-weight:600;margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)}
-.source-row{font-size:12px;font-family:var(--mono);margin-bottom:6px;display:flex;align-items:center}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;flex-shrink:0}
-.dot-ok{background:var(--success)}.dot-fail{background:var(--danger)}.dot-pending{background:var(--warn)}.dot-timeout{background:#f97316}.dot-off{background:var(--border)}
+.source-row{font-size:12px;font-family:var(--mono);margin-bottom:6px;display:flex;align-items:flex-start}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;flex-shrink:0;margin-top:3px}
+.dot-ok{background:var(--success)}.dot-fail{background:var(--danger)}.dot-timeout{background:var(--orange)}.dot-off{background:var(--border)}
 .source-label{color:var(--dim);width:180px;display:inline-block;flex-shrink:0}
-.sources .footer{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+.sources .sfooter{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
 .loading{text-align:center;padding:40px 0;color:var(--dim);font-family:var(--mono);font-size:13px}
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin-right:6px;vertical-align:middle}
 @keyframes spin{to{transform:rotate(360deg)}}
 #export-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;align-items:center;justify-content:center;padding:20px}
 #export-modal.open{display:flex}
-#export-modal-inner{background:var(--card);border:1px solid var(--border);border-radius:10px;max-width:800px;width:100%;max-height:80vh;display:flex;flex-direction:column}
-#export-modal-inner .modal-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
-#export-modal-inner .modal-header h3{font-size:14px;font-family:var(--mono);color:var(--dim);text-transform:uppercase}
-#export-modal-inner pre{padding:18px;font-size:11px;font-family:var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;overflow:auto;flex:1;line-height:1.5}
-@media(max-width:600px){body{padding:12px 14px}.pill{min-width:80px;padding:8px 10px}.pill .value{font-size:18px}.forecast-row .name{width:80px;font-size:12px}.forecast-row .fwind{display:none}.extra-products-grid{grid-template-columns:1fr}}
+.modal-inner{background:var(--card);border:1px solid var(--border);border-radius:10px;max-width:800px;width:100%;max-height:80vh;display:flex;flex-direction:column}
+.modal-header{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
+.modal-header h3{font-size:14px;font-family:var(--mono);color:var(--dim);text-transform:uppercase}
+.modal-inner pre{padding:18px;font-size:11px;font-family:var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;overflow:auto;flex:1;line-height:1.5}
+@media(max-width:600px){body{padding:12px 14px}.pill{min-width:80px;padding:8px 10px}.pill .value{font-size:18px}.forecast-row .fname{width:80px;font-size:12px}.forecast-row .fwind{display:none}.ep-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 
 <div class="header">
   <div>
-    <h1><span class="icon">◈</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector · <span style="opacity:.5">v4.14</span></div>
+    <h1><span class="icon">&#9672;</span> Weather Station</h1>
+    <div class="sub" id="header-sub">Multi-node data collector &middot; <span style="opacity:.5">v4.17</span></div>
   </div>
   <div class="actions">
     <span class="fetch-time" id="fetch-time"></span>
-    <button class="btn btn-primary" id="refresh-btn" onclick="fetchAllNodes()">⟳ Fetch All</button>
+    <button class="btn btn-primary" id="refresh-btn" onclick="fetchAllNodes()">&#8635; Fetch All</button>
   </div>
 </div>
 
-<div class="settings" id="settings-panel">
+<div class="settings">
   <div class="section-label">Quick Add</div>
   <div class="presets" id="presets"></div>
   <div class="section-label">Add Location</div>
   <div class="add-node-row">
-    <input style="flex:1;min-width:200px" id="input-location" placeholder="City/State, ZIP, address, or lat,lon">
-    <select id="input-role" style="min-width:130px">
+    <input id="input-location" placeholder="City/State, ZIP, address, or lat,lon">
+    <select id="input-role">
       <option value="home_base">Home Base</option>
       <option value="destination">Destination</option>
       <option value="connection">Connection</option>
@@ -192,805 +175,484 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
     <button class="btn btn-primary btn-sm" onclick="addNode()">+ Add</button>
   </div>
   <div id="geocode-status"></div>
-  <div class="hint">NWS forecast is US-only. Non-US locations get Open-Meteo data only. Climate normals (ERA5 2015–2024, 7-day rolling window) load automatically for any location — no token required.</div>
+  <div class="hint">NWS forecast + QPF is US-only. Non-US nodes get Open-Meteo only. ERA5 climate normals load automatically everywhere.</div>
   <div class="section-label">Active Nodes</div>
   <div class="node-list" id="node-list"></div>
   <div class="section-label">Export Options</div>
   <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-    <div><label>Hourly Window</label><select id="input-hours" onchange="STATE.hourlyWindow=parseInt(this.value)"><option value="12">12 hours</option><option value="24">24 hours</option><option value="48">48 hours</option><option value="72" selected>72 hours</option></select></div>
-    <div><label>Include AFD</label><select id="input-afd" onchange="STATE.afdMode=this.value"><option value="full" selected>Full text</option><option value="summary">Summary (2000 chars)</option><option value="none">None</option></select></div>
+    <div><label>Hourly Window</label><select id="input-hours" onchange="STATE.hourlyWindow=parseInt(this.value)"><option value="12">12 h</option><option value="24">24 h</option><option value="48">48 h</option><option value="72" selected>72 h</option></select></div>
+    <div><label>Include AFD</label><select id="input-afd" onchange="STATE.afdMode=this.value"><option value="full" selected>Full text</option><option value="summary">2000 chars</option><option value="none">None</option></select></div>
   </div>
 
-  <div class="section-label">Additional NWS Products <span style="font-size:10px;font-weight:400;opacity:.5;text-transform:none;letter-spacing:0">(opt-in · re-fetch to apply)</span></div>
-  <div class="extra-products-grid">
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-ero" onchange="STATE.extraProducts.ero=this.checked">
-      <div>
-        <div class="ep-title">WPC ERO</div>
-        <div class="ep-sub">Excessive Rainfall Outlook</div>
-        <div class="ep-hint">Risk categories (Marginal/Slight/Enhanced/High) from WPC forecasters. Independent QPF assessment — sometimes diverges from local AFD.</div>
-      </div>
-    </label>
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-mpd" onchange="STATE.extraProducts.mpd=this.checked">
-      <div>
-        <div class="ep-title">WPC MPD</div>
-        <div class="ep-sub">Mesoscale Precip Discussion</div>
-        <div class="ep-hint">Issued in real time during active events — often before the local AFD is updated. Highest signal for training scenarios.</div>
-      </div>
-    </label>
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-lsr" onchange="STATE.extraProducts.lsr=this.checked">
-      <div>
-        <div class="ep-title">LSR</div>
-        <div class="ep-sub">Local Storm Reports</div>
-        <div class="ep-hint">Ground truth from spotters and automated stations during active events. Real-time rainfall totals as a band approaches.</div>
-      </div>
-    </label>
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-asosPrecip" onchange="STATE.extraProducts.asosPrecip=this.checked">
-      <div>
-        <div class="ep-title">ASOS Hourly Precip</div>
-        <div class="ep-sub">Station accumulation obs</div>
-        <div class="ep-hint">Actual measured rainfall at the NWS obs station. 24h history. Ground truth anchor during events instead of relying on forecast grids.</div>
-      </div>
-    </label>
+  <div class="section-label">NWS Extra Products <span style="font-size:10px;font-weight:400;opacity:.5;text-transform:none;letter-spacing:0">(opt-in &middot; re-fetch to apply)</span></div>
+  <div class="ep-grid">
+    <label class="ep-toggle"><input type="checkbox" id="tog-ero" onchange="STATE.extraProducts.ero=this.checked"><div><div class="ep-title">WPC ERO</div><div class="ep-sub">Excessive Rainfall Outlook</div><div class="ep-hint">Risk categories from WPC. Independent QPF risk assessment.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-mpd" onchange="STATE.extraProducts.mpd=this.checked"><div><div class="ep-title">WPC MPD</div><div class="ep-sub">Mesoscale Precip Discussion</div><div class="ep-hint">Issued in real time during active events. Highest signal for training scenarios.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-lsr" onchange="STATE.extraProducts.lsr=this.checked"><div><div class="ep-title">LSR</div><div class="ep-sub">Local Storm Reports</div><div class="ep-hint">Ground truth from spotters and ASOS. Real-time rainfall totals.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-asosPrecip" onchange="STATE.extraProducts.asosPrecip=this.checked"><div><div class="ep-title">ASOS Hourly Precip</div><div class="ep-sub">Station accumulation obs &middot; 24h</div><div class="ep-hint">Measured rainfall at NWS obs station. Ground truth anchor during events.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-hwo" onchange="STATE.extraProducts.hwo=this.checked"><div><div class="ep-title">HWO</div><div class="ep-sub">Hazardous Weather Outlook</div><div class="ep-hint">7-day threat summary from local NWS office. More concise than AFD for planning.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-spc" onchange="STATE.extraProducts.spc=this.checked"><div><div class="ep-title">SPC Outlook</div><div class="ep-sub">Day 1 + Day 2 Convective</div><div class="ep-hint">Storm Prediction Center categorical risk (TSTM&rarr;MRGL&rarr;SLGT&rarr;ENH&rarr;MDT&rarr;HIGH). National product.</div></div></label>
   </div>
 
-  <div class="section-label">Open-Meteo Extended Variables <span style="font-size:10px;font-weight:400;opacity:.5;text-transform:none;letter-spacing:0">(opt-in · re-fetch to apply)</span></div>
-  <div style="font-size:10px;color:var(--dim);font-family:var(--mono);margin-bottom:8px;opacity:.7">Forecast variables — appended to the existing Open-Meteo request, no extra network cost</div>
-  <div class="extra-products-grid">
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-qpf" onchange="STATE.omVars.qpf=this.checked">
-      <div>
-        <div class="ep-title">Actual QPF</div>
-        <div class="ep-sub">precipitation, rain, showers, snowfall</div>
-        <div class="ep-hint">Currently only getting rain chance. This gives the actual modeled accumulation per hour — the number that matters during an event.</div>
-      </div>
-    </label>
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-convective" onchange="STATE.omVars.convective=this.checked">
-      <div>
-        <div class="ep-title">Convective Params</div>
-        <div class="ep-sub">CAPE, Lifted Index, CIN</div>
-        <div class="ep-hint">Essential for thunderstorm and training potential. CAPE > 1000 J/kg is notable; LI below zero means the atmosphere is unstable.</div>
-      </div>
-    </label>
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-bld" onchange="STATE.omVars.bld=this.checked">
-      <div>
-        <div class="ep-title">Boundary Layer Height</div>
-        <div class="ep-sub">mixing layer depth, hourly</div>
-        <div class="ep-hint">How high convection and pollutants can mix. Relevant for smoke transport, air quality, and convective development ceilings.</div>
-      </div>
-    </label>
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-freezing" onchange="STATE.omVars.freezing=this.checked">
-      <div>
-        <div class="ep-title">Freezing Level</div>
-        <div class="ep-sub">freezing_level_height, snowfall_height</div>
-        <div class="ep-hint">Snow level in feet. Critical in shoulder season for precip type — the difference between rain, sleet, and snow at ground level.</div>
-      </div>
-    </label>
+  <div class="section-label">Open-Meteo Variables <span style="font-size:10px;font-weight:400;opacity:.5;text-transform:none;letter-spacing:0">(opt-in &middot; appended to existing request)</span></div>
+  <div class="ep-grid">
+    <label class="ep-toggle"><input type="checkbox" id="tog-qpf" onchange="STATE.omVars.qpf=this.checked"><div><div class="ep-title">OM QPF</div><div class="ep-sub">precipitation, rain, showers, snowfall</div><div class="ep-hint">Modeled hourly accum. GFS/ICON can 2-7x overestimate convective events — cross-check NWS QPF.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-conv" onchange="STATE.omVars.convective=this.checked"><div><div class="ep-title">Convective Params</div><div class="ep-sub">CAPE, Lifted Index, CIN</div><div class="ep-hint">CAPE &gt;1000 J/kg notable. LI &lt;0 = unstable atmosphere. Essential for thunderstorm depth.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-bld" onchange="STATE.omVars.bld=this.checked"><div><div class="ep-title">Boundary Layer</div><div class="ep-sub">mixing layer depth, hourly</div><div class="ep-hint">Convective ceiling and smoke transport depth. Higher = better mixing.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-frz" onchange="STATE.omVars.freezing=this.checked"><div><div class="ep-title">Freezing Level</div><div class="ep-sub">freezing_level_height, snowfall_height</div><div class="ep-hint">Snow level in feet. Critical shoulder-season precip-type indicator.</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-aq" onchange="STATE.extraProducts.aq=this.checked"><div><div class="ep-title">Air Quality</div><div class="ep-sub">AQI, PM2.5, PM10, O&#8323;, dust</div><div class="ep-hint">Open-Meteo AQ API. 3-day hourly + current snapshot. Separate request per node.</div></div></label>
   </div>
-  <div style="font-size:10px;color:var(--dim);font-family:var(--mono);margin:8px 0;opacity:.7">Additional models — one extra request per node per model</div>
-  <div class="extra-products-grid">
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-ecmwf" onchange="STATE.omModels.ecmwf=this.checked">
-      <div>
-        <div class="ep-title">ECMWF IFS</div>
-        <div class="ep-sub">European Centre · 9km · 10-day</div>
-        <div class="ep-hint">ECMWF's independent model, now open-data at full 9km resolution. Consistently better skill than GFS past day 5. Cross-check for medium-range events.</div>
-      </div>
-    </label>
-    <label class="extra-product-toggle">
-      <input type="checkbox" id="toggle-ensemble" onchange="STATE.omModels.ensemble=this.checked">
-      <div>
-        <div class="ep-title">Ensemble Spread</div>
-        <div class="ep-sub">ICON EPS · p10 / median / p90</div>
-        <div class="ep-hint">Multiple model runs quantifying forecast uncertainty. Wide spread means low confidence. Helps Claude assess how much to trust the deterministic forecast.</div>
-      </div>
-    </label>
+  <div style="font-size:10px;color:var(--dim);font-family:var(--mono);margin:8px 0 4px;opacity:.7">Additional models &mdash; one extra request per node</div>
+  <div class="ep-grid">
+    <label class="ep-toggle"><input type="checkbox" id="tog-ecmwf" onchange="STATE.omModels.ecmwf=this.checked"><div><div class="ep-title">ECMWF IFS</div><div class="ep-sub">European Centre &middot; 9km &middot; 10-day</div><div class="ep-hint">Independent model. Better medium-range skill past day 5. Precipitation de-duped (Bug 1 fix).</div></div></label>
+    <label class="ep-toggle"><input type="checkbox" id="tog-ens" onchange="STATE.omModels.ensemble=this.checked"><div><div class="ep-title">Ensemble Spread</div><div class="ep-sub">ICON EPS &middot; p10/median/p90</div><div class="ep-hint">Forecast uncertainty quantification. Wide spread = low confidence.</div></div></label>
   </div>
 
   <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;gap:12px">
-    <button class="btn btn-primary" onclick="fetchAllNodes()" style="padding:8px 20px;font-size:13px">⟳ Apply & Re-fetch All</button>
-    <span style="font-size:11px;color:var(--dim);font-family:var(--mono)">Re-fetches all nodes with current settings</span>
+    <button class="btn btn-primary" onclick="fetchAllNodes()" style="padding:8px 20px;font-size:13px">&#8635; Apply &amp; Re-fetch All</button>
+    <span style="font-size:11px;color:var(--dim);font-family:var(--mono)">Re-fetches all nodes with current toggle state</span>
   </div>
 </div>
 
-<!-- Action bar -->
 <div class="action-bar" id="action-bar" style="display:none">
-  <div class="info" id="action-info">Loading…</div>
+  <div class="info" id="action-info">Loading&hellip;</div>
   <div style="display:flex;gap:8px;align-items:center">
-    <span class="copy-status" id="copy-status">✓ Copied!</span>
+    <span class="copy-status" id="copy-status">&#10003; Copied!</span>
     <button class="btn btn-secondary" onclick="showPreview()">Preview JSON</button>
-    <button class="btn btn-export" onclick="copyForClaude()">📋 Copy for Claude</button>
+    <button class="btn btn-export" onclick="copyForClaude()">&#128203; Copy for Claude</button>
   </div>
 </div>
 
 <div class="node-tabs" id="node-tabs"></div>
-<div id="loading" class="loading" style="display:none"><span class="spinner"></span>Fetching live data…</div>
+<div id="loading" class="loading" style="display:none"><span class="spinner"></span>Fetching live data&hellip;</div>
 <div id="node-panels"></div>
 
-<!-- Export Preview Modal -->
 <div id="export-modal" onclick="if(event.target===this)closePreview()">
-  <div id="export-modal-inner">
+  <div class="modal-inner">
     <div class="modal-header">
       <h3>Export Preview</h3>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-export" onclick="copyForClaude();closePreview()">📋 Copy</button>
+        <button class="btn btn-export" onclick="copyForClaude();closePreview()">&#128203; Copy</button>
         <button class="btn btn-secondary" onclick="closePreview()">Close</button>
       </div>
     </div>
-    <pre id="export-modal-content">No data yet. Fetch first.</pre>
+    <pre id="export-modal-content">No data yet.</pre>
   </div>
 </div>
 
 <script>
-var VERSION="4.15-2026-04-03";
+var VERSION="4.17-2026-04-06";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
-  {label:"Chicago, IL (ORD)",lat:41.9742,lon:-87.9073,role:"destination"},
-  {label:"Manchester, NH",lat:42.9328,lon:-71.4357,role:"destination"},
-  {label:"Phoenix, AZ",lat:33.4373,lon:-112.0078,role:"destination"},
-  {label:"Tampa, FL",lat:27.9755,lon:-82.5332,role:"destination"},
+  {label:"Chicago ORD",lat:41.9742,lon:-87.9073,role:"destination"},
+  {label:"Orlando MCO",lat:28.4312,lon:-81.3081,role:"destination"},
+  {label:"Manchester NH",lat:42.9328,lon:-71.4357,role:"destination"},
+  {label:"Phoenix AZ",lat:33.4373,lon:-112.0078,role:"destination"},
 ];
 var ROLE_LABELS={home_base:"Home Base",destination:"Destination",connection:"Connection",run_location:"Run Location"};
 var ROLE_CLASSES={home_base:"role-home",destination:"role-dest",connection:"role-conn",run_location:"role-run"};
+
 var STATE={
-  nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",nws:null,uv:null,climate:null,ero:null,mpd:null,lsr:null,asosPrecip:null,ecmwf:null,ensemble:null,errors:[],timeouts:[],status:"idle"}],
-  hourlyWindow:72,
-  afdMode:"full",
-  fetchTime:null,
-  activeTab:"n0",
-  nextId:1,
-  extraProducts:{ero:false,mpd:false,lsr:false,asosPrecip:false},
+  nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",
+    nws:null,uv:null,climate:null,gridpoint:null,aq:null,
+    ero:null,mpd:null,lsr:null,asosPrecip:null,hwo:null,ecmwf:null,ensemble:null,
+    errors:[],timeouts:[],status:"idle"}],
+  hourlyWindow:72,afdMode:"full",fetchTime:null,activeTab:"n0",nextId:1,
+  spcData:null,
+  extraProducts:{ero:false,mpd:false,lsr:false,asosPrecip:false,hwo:false,spc:false,aq:false},
   omVars:{qpf:false,convective:false,bld:false,freezing:false},
   omModels:{ecmwf:false,ensemble:false}
 };
 
-// ─── Timeout constants (ms) ──────────────────────────────
-var TIMEOUT_NWS_POINTS   = 12000;
-var TIMEOUT_NWS_FORECAST = 12000;
-var TIMEOUT_NWS_OBS      =  8000;
-var TIMEOUT_NWS_AFD      = 10000;
-var TIMEOUT_OPEN_METEO   = 12000;
-var TIMEOUT_CLIMATE      = 20000;
-var TIMEOUT_GEOCODE      = 10000;
-var TIMEOUT_EXTRA        = 12000;  // ERO, MPD, LSR, ASOS extra product fetches
+// Timeouts
+var T_NWS_PTS=12000,T_NWS_FC=12000,T_NWS_OBS=8000,T_NWS_AFD=10000,T_NWS_GRID=18000;
+var T_OM=12000,T_CLIMATE=20000,T_GEO=10000,T_EXTRA=12000;
 
-// ─── Helpers ────────────────────────────────────────────
-function ts(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true,timeZoneName:"short"})}
-function ago(iso){if(!iso)return"";var m=Math.round((Date.now()-new Date(iso).getTime())/60000);if(m<1)return"just now";if(m<60)return m+"m ago";if(m<1440)return Math.round(m/60)+"h ago";return Math.round(m/1440)+"d ago"}
-function compass(d){if(d==null)return"—";return["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(d/22.5)%16]}
-function cToF(c){return c!=null?Math.round(c*9/5+32):null}
-function mpsToMph(m){return m!=null?Math.round(m*2.237):null}
-function mToMi(m){return m!=null?Math.round(m/1609.34*10)/10:null}
-function paToInHg(p){return p!=null?Math.round(p/3386.39*100)/100:null}
-function mmToIn(v){return v!=null?Math.round(v/25.4*100)/100:null}
-function vv(x){return x!=null&&x!==undefined?x:"—"}
-function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
-function pad2(n){return String(n).padStart(2,"0")}
-function fmtTimeShort(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{hour:"numeric",minute:"2-digit",hour12:true})}
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function ts(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true,timeZoneName:"short"});}
+function ago(iso){if(!iso)return"";var m=Math.round((Date.now()-new Date(iso))/60000);if(m<1)return"just now";if(m<60)return m+"m ago";if(m<1440)return Math.round(m/60)+"h ago";return Math.round(m/1440)+"d ago";}
+function compass(d){if(d==null)return"—";return["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(d/22.5)%16];}
+function cF(c){return c!=null?Math.round(c*9/5+32):null;}
+function mphv(m){return m!=null?Math.round(m*2.237):null;}
+function mMi(m){return m!=null?Math.round(m/1609.34*10)/10:null;}
+function inHg(p){return p!=null?Math.round(p/3386.39*100)/100:null;}
+function mmIn(v){return v!=null?Math.round(v/25.4*100)/100:null;}
+function mmInP(v){return v!=null?Math.round(v/25.4*1000)/1000:null;}
+function vv(x){return x!=null?x:"—";}
+function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;}
+function pad2(n){return String(n).padStart(2,"0");}
+function fmtShortTime(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{hour:"numeric",minute:"2-digit",hour12:true});}
 
-// ─── Fetch with timeout ──────────────────────────────────
-function fetchWithTimeout(url, options, ms) {
-  var controller = new AbortController();
-  var timer = setTimeout(function() { controller.abort(); }, ms);
-  var fetchOpts = Object.assign({}, options, { signal: controller.signal });
-  return fetch(url, fetchOpts).then(function(r) {
-    clearTimeout(timer);
-    return r;
-  }).catch(function(e) {
-    clearTimeout(timer);
-    if (e.name === "AbortError") {
-      var err = new Error("Timeout after " + (ms/1000).toFixed(0) + "s");
-      err.isTimeout = true;
-      throw err;
-    }
-    throw e;
-  });
+function fetchWT(url,opts,ms){
+  var ctrl=new AbortController();
+  var timer=setTimeout(function(){ctrl.abort();},ms);
+  return fetch(url,Object.assign({},opts,{signal:ctrl.signal}))
+    .then(function(r){clearTimeout(timer);return r;})
+    .catch(function(e){clearTimeout(timer);if(e.name==="AbortError"){var err=new Error("Timeout "+ms/1000+"s");err.isTimeout=true;throw err;}throw e;});
 }
 
-// ─── SVG Charts ─────────────────────────────────────────
-function sparkSvg(values,opts){
-  var w=opts.w||340,h=opts.h||80,color=opts.color||"var(--accent)",fill=opts.fill||false;
-  var nums=values.map(function(v){return typeof v==="number"?v:null});
-  var valid=nums.filter(function(v){return v!==null});
-  if(valid.length<2)return'<div style="color:var(--dim);font-size:11px;font-family:var(--mono);padding:8px">Insufficient data</div>';
+// ── Charts ────────────────────────────────────────────────────────────────────
+function spark(values,opts){
+  var w=opts.w||340,h=opts.h||80,color=opts.color||"var(--accent)",fill=opts.fill||false,unit=opts.unit||"";
+  var nums=values.map(function(v){return typeof v==="number"?v:null;});
+  var valid=nums.filter(function(v){return v!==null;});
+  if(valid.length<2)return'<div style="color:var(--dim);font-size:11px;font-family:var(--mono);padding:8px">No data</div>';
   var mn=Math.min.apply(null,valid),mx=Math.max.apply(null,valid);
-  if(mn===mx){mn-=1;mx+=1}
-  var pad=6,pw=w-pad*2,ph=h-pad*2;
+  if(mn===mx){mn-=1;mx+=1;}
+  var pad=8,pw=w-pad*2,ph=h-pad*2;
   var pts=[];
-  for(var i=0;i<nums.length;i++){
-    if(nums[i]===null)continue;
-    var x=pad+(i/(nums.length-1))*pw;
-    var y=pad+ph-(((nums[i]-mn)/(mx-mn))*ph);
-    pts.push(x.toFixed(1)+","+y.toFixed(1));
-  }
-  var line=pts.join(" ");
-  var svg='<svg viewBox="0 0 '+w+' '+h+'" width="100%" height="'+h+'" xmlns="http://www.w3.org/2000/svg" style="display:block">';
-  svg+='<text x="'+pad+'" y="'+(pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mx)+(opts.unit||"")+'</text>';
-  svg+='<text x="'+pad+'" y="'+(h-2)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mn)+(opts.unit||"")+'</text>';
-  svg+='<line x1="'+pad+'" y1="'+pad+'" x2="'+(w-pad)+'" y2="'+pad+'" stroke="var(--border)" stroke-width="0.5"/>';
-  svg+='<line x1="'+pad+'" y1="'+(pad+ph/2)+'" x2="'+(w-pad)+'" y2="'+(pad+ph/2)+'" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="4,4"/>';
-  svg+='<line x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(w-pad)+'" y2="'+(h-pad)+'" stroke="var(--border)" stroke-width="0.5"/>';
-  if(fill){
-    var fillPts=pts[0].split(",")[0]+","+(h-pad)+" "+line+" "+pts[pts.length-1].split(",")[0]+","+(h-pad);
-    svg+='<polygon points="'+fillPts+'" fill="'+color+'" opacity="0.15"/>';
-  }
-  svg+='<polyline points="'+line+'" fill="none" stroke="'+color+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
-  if(pts.length>0){
-    svg+='<circle cx="'+pts[0].split(",")[0]+'" cy="'+pts[0].split(",")[1]+'" r="3" fill="'+color+'"/>';
-    svg+='<circle cx="'+pts[pts.length-1].split(",")[0]+'" cy="'+pts[pts.length-1].split(",")[1]+'" r="3" fill="'+color+'"/>';
-  }
-  svg+='</svg>';
-  return svg;
+  for(var i=0;i<nums.length;i++){if(nums[i]===null)continue;var x=pad+(i/(nums.length-1))*pw;var y=pad+ph-(((nums[i]-mn)/(mx-mn))*ph);pts.push(x.toFixed(1)+","+y.toFixed(1));}
+  var s='<svg viewBox="0 0 '+w+' '+h+'" width="100%" height="'+h+'" xmlns="http://www.w3.org/2000/svg" style="display:block">';
+  s+='<text x="'+pad+'" y="'+(pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mx)+unit+'</text>';
+  s+='<text x="'+pad+'" y="'+(h-2)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mn)+unit+'</text>';
+  s+='<line x1="'+pad+'" y1="'+pad+'" x2="'+(w-pad)+'" y2="'+pad+'" stroke="var(--border)" stroke-width="0.5"/>';
+  s+='<line x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(w-pad)+'" y2="'+(h-pad)+'" stroke="var(--border)" stroke-width="0.5"/>';
+  if(fill){var fp=pts[0].split(",")[0]+","+(h-pad)+" "+pts.join(" ")+" "+pts[pts.length-1].split(",")[0]+","+(h-pad);s+='<polygon points="'+fp+'" fill="'+color+'" opacity="0.15"/>';}
+  s+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="'+color+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+  s+='</svg>';
+  return s;
 }
-
 function barChart(labels,highs,lows){
-  var w=400,h=120,pad=30,barW=20,gap=8;
-  var all=highs.concat(lows).filter(function(v){return v!=null});
+  var w=400,h=120,pad=30,bw=20,gap=8;
+  var all=highs.concat(lows).filter(function(v){return v!=null;});
   if(all.length<2)return"";
-  var mn=Math.min.apply(null,all)-5,mx=Math.max.apply(null,all)+5;
-  var ph=h-pad*2;
-  var totalW=labels.length*(barW+gap);
-  var svg='<svg viewBox="0 0 '+Math.max(w,totalW+pad*2)+' '+h+'" width="100%" height="'+h+'" xmlns="http://www.w3.org/2000/svg" style="display:block">';
-  svg+='<line x1="'+pad+'" y1="'+pad+'" x2="'+(Math.max(w,totalW+pad*2)-pad)+'" y2="'+pad+'" stroke="var(--border)" stroke-width="0.5"/>';
-  svg+='<line x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(Math.max(w,totalW+pad*2)-pad)+'" y2="'+(h-pad)+'" stroke="var(--border)" stroke-width="0.5"/>';
-  svg+='<text x="2" y="'+(pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mx)+'°</text>';
-  svg+='<text x="2" y="'+(h-pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mn)+'°</text>';
+  var mn=Math.min.apply(null,all)-5,mx=Math.max.apply(null,all)+5,ph=h-pad*2;
+  var tw=Math.max(w,labels.length*(bw+gap)+pad*2);
+  var s='<svg viewBox="0 0 '+tw+' '+h+'" width="100%" height="'+h+'" xmlns="http://www.w3.org/2000/svg" style="display:block">';
+  s+='<text x="2" y="'+(pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mx)+'°</text>';
+  s+='<text x="2" y="'+(h-pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mn)+'°</text>';
   for(var i=0;i<labels.length;i++){
-    var x=pad+i*(barW+gap)+barW/2;
-    var hi=highs[i],lo=lows[i];
+    var x=pad+i*(bw+gap)+bw/2,hi=highs[i],lo=lows[i];
     if(hi!=null&&lo!=null){
-      var y1=pad+ph-((hi-mn)/(mx-mn))*ph;
-      var y2=pad+ph-((lo-mn)/(mx-mn))*ph;
-      svg+='<line x1="'+x+'" y1="'+y1+'" x2="'+x+'" y2="'+y2+'" stroke="var(--accent)" stroke-width="'+barW/3+'" stroke-linecap="round" opacity="0.6"/>';
-      svg+='<circle cx="'+x+'" cy="'+y1+'" r="4" fill="var(--danger)"/>';
-      svg+='<circle cx="'+x+'" cy="'+y2+'" r="4" fill="var(--accent)"/>';
-      svg+='<text x="'+x+'" y="'+(y1-6)+'" fill="var(--danger)" font-size="9" font-family="var(--mono)" text-anchor="middle">'+hi+'°</text>';
-      svg+='<text x="'+x+'" y="'+(y2+14)+'" fill="var(--accent)" font-size="9" font-family="var(--mono)" text-anchor="middle">'+lo+'°</text>';
+      var y1=pad+ph-((hi-mn)/(mx-mn))*ph,y2=pad+ph-((lo-mn)/(mx-mn))*ph;
+      s+='<line x1="'+x+'" y1="'+y1+'" x2="'+x+'" y2="'+y2+'" stroke="var(--accent)" stroke-width="'+(bw/3)+'" stroke-linecap="round" opacity="0.6"/>';
+      s+='<circle cx="'+x+'" cy="'+y1+'" r="4" fill="var(--danger)"/>';
+      s+='<circle cx="'+x+'" cy="'+y2+'" r="4" fill="var(--accent)"/>';
+      s+='<text x="'+x+'" y="'+(y1-6)+'" fill="var(--danger)" font-size="9" font-family="var(--mono)" text-anchor="middle">'+hi+'°</text>';
+      s+='<text x="'+x+'" y="'+(y2+14)+'" fill="var(--accent)" font-size="9" font-family="var(--mono)" text-anchor="middle">'+lo+'°</text>';
     }
-    svg+='<text x="'+x+'" y="'+(h-4)+'" fill="var(--dim)" font-size="8" font-family="var(--mono)" text-anchor="middle">'+esc(labels[i].slice(0,3))+'</text>';
+    s+='<text x="'+x+'" y="'+(h-4)+'" fill="var(--dim)" font-size="8" font-family="var(--mono)" text-anchor="middle">'+esc(labels[i].slice(0,3))+'</text>';
   }
-  svg+='</svg>';
-  return svg;
+  s+='</svg>';
+  return s;
 }
 
-// ─── Core API ────────────────────────────────────────────
-function nwsFetch(url, timeoutMs) {
-  var ms = timeoutMs || TIMEOUT_NWS_FORECAST;
-  return fetchWithTimeout(url, {
-    headers: {
-      "User-Agent": "(WeatherStation,contact@example.com)",
-      "Accept": "application/geo+json"
-    },
-    cache: "no-store"
-  }, ms).then(function(r) {
-    if (!r.ok) throw new Error("NWS " + r.status + " " + r.statusText);
-    return r.json();
-  });
+// ── NWS wrapper ───────────────────────────────────────────────────────────────
+function nwsGet(url,ms){
+  return fetchWT(url,{headers:{"User-Agent":"(WeatherStation,contact@example.com)","Accept":"application/geo+json"},cache:"no-store"},ms||T_NWS_FC)
+    .then(function(r){if(!r.ok)throw new Error("NWS "+r.status);return r.json();});
 }
 
-function fetchNodeNWS(lat, lon) {
-  return nwsFetch("https://api.weather.gov/points/" + lat + "," + lon, TIMEOUT_NWS_POINTS)
-    .then(function(pts) {
-      var p = pts.properties;
-      var forecP  = nwsFetch(p.forecast, TIMEOUT_NWS_FORECAST);
-      var hourlyP = nwsFetch(p.forecastHourly, TIMEOUT_NWS_FORECAST);
-      var stnsP   = nwsFetch(p.observationStations, TIMEOUT_NWS_FORECAST);
-      var alrtP   = nwsFetch("https://api.weather.gov/alerts/active?point=" + lat + "," + lon, TIMEOUT_NWS_FORECAST);
-
-      return Promise.all([forecP, hourlyP, stnsP, alrtP]).then(function(res) {
-        var forecast = res[0], hourly = res[1], stations = res[2], alerts = res[3];
-        var stId = stations.features && stations.features[0]
-          ? stations.features[0].properties.stationIdentifier : null;
-
-        var result = {
-          office: p.gridId,
-          stationId: stId,
-          forecast: forecast.properties.periods || [],
-          hourly: hourly.properties.periods || [],
-          observation: null,
-          alerts: alerts.features || [],
-          afd: null,
-          afdTime: null,
-          forecastUpdated: forecast.properties.updateTime,
-          hourlyUpdated: hourly.properties.updateTime,
-          obsTimedOut: false,
-          afdTimedOut: false
+// ── NWS Core Fetch ────────────────────────────────────────────────────────────
+function fetchNodeNWS(lat,lon){
+  return nwsGet("https://api.weather.gov/points/"+lat+","+lon,T_NWS_PTS)
+    .then(function(pts){
+      var p=pts.properties;
+      return Promise.all([
+        nwsGet(p.forecast),nwsGet(p.forecastHourly),
+        nwsGet(p.observationStations),
+        nwsGet("https://api.weather.gov/alerts/active?point="+lat+","+lon)
+      ]).then(function(res){
+        var fc=res[0],hr=res[1],stns=res[2],alrt=res[3];
+        var stId=stns.features&&stns.features[0]?stns.features[0].properties.stationIdentifier:null;
+        var result={
+          office:p.gridId,stationId:stId,
+          gridId:p.gridId,gridX:p.gridX,gridY:p.gridY,
+          forecast:fc.properties.periods||[],
+          hourly:hr.properties.periods||[],
+          observation:null,alerts:alrt.features||[],
+          afd:null,afdTime:null,
+          forecastUpdated:fc.properties.updateTime,
+          hourlyUpdated:hr.properties.updateTime,
+          obsTimedOut:false,afdTimedOut:false
         };
-
-        var obsP = stId
-          ? nwsFetch(
-              "https://api.weather.gov/stations/" + stId + "/observations/latest",
-              TIMEOUT_NWS_OBS
-            )
-              .then(function(o) { result.observation = o.properties; })
-              .catch(function(e) {
-                if (e.isTimeout) result.obsTimedOut = true;
-                console.log("[WS] Obs error:", e.message);
-              })
-          : Promise.resolve();
-
-        var afdP = nwsFetch(
-          "https://api.weather.gov/products/types/AFD/locations/" + p.gridId,
-          TIMEOUT_NWS_AFD
-        ).then(function(al) {
-          var id = al["@graph"] && al["@graph"][0] ? al["@graph"][0].id : null;
-          if (id) {
-            return nwsFetch("https://api.weather.gov/products/" + id, TIMEOUT_NWS_AFD)
-              .then(function(a) {
-                result.afd = a.productText;
-                result.afdTime = a.issuanceTime;
-              });
-          }
-        }).catch(function(e) {
-          if (e.isTimeout) result.afdTimedOut = true;
-          console.log("[WS] AFD error:", e.message);
-        });
-
-        return Promise.all([obsP, afdP]).then(function() { return result; });
+        var obsP=stId?nwsGet("https://api.weather.gov/stations/"+stId+"/observations/latest",T_NWS_OBS)
+          .then(function(o){result.observation=o.properties;})
+          .catch(function(e){if(e.isTimeout)result.obsTimedOut=true;}):Promise.resolve();
+        var afdP=nwsGet("https://api.weather.gov/products/types/AFD/locations/"+p.gridId,T_NWS_AFD)
+          .then(function(al){
+            var id=al["@graph"]&&al["@graph"][0]?al["@graph"][0].id:null;
+            if(!id)return;
+            return nwsGet("https://api.weather.gov/products/"+id,T_NWS_AFD)
+              .then(function(a){result.afd=a.productText;result.afdTime=a.issuanceTime;});
+          }).catch(function(e){if(e.isTimeout)result.afdTimedOut=true;});
+        return Promise.all([obsP,afdP]).then(function(){return result;});
       });
     });
 }
 
-function fetchNodeUV(lat, lon) {
-  // Base hourly variables — always fetched
-  var hourlyVars = "uv_index,uv_index_clear_sky,temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover";
-  // Free-rider opt-in variables — appended to the same request, zero extra cost
-  if (STATE.omVars.qpf)        hourlyVars += ",precipitation,rain,showers,snowfall";
-  if (STATE.omVars.convective)  hourlyVars += ",cape,lifted_index,convective_inhibition";
-  if (STATE.omVars.bld)         hourlyVars += ",boundary_layer_height";
-  if (STATE.omVars.freezing)    hourlyVars += ",freezing_level_height,snowfall_height";
-
-  var params = new URLSearchParams({
-    latitude: lat,
-    longitude: lon,
-    hourly: hourlyVars,
-    daily: "sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max",
-    temperature_unit: "fahrenheit",
-    wind_speed_unit: "mph",
-    precipitation_unit: "inch",
-    timezone: "auto",
-    forecast_days: String(Math.max(7, Math.ceil(STATE.hourlyWindow / 24) + 1))
-  });
-  return fetchWithTimeout(
-    "https://api.open-meteo.com/v1/forecast?" + params,
-    { cache: "no-store" },
-    TIMEOUT_OPEN_METEO
-  ).then(function(r) {
-    if (!r.ok) throw new Error("Open-Meteo " + r.status);
-    return r.json();
-  });
-}
-
-// ─── ECMWF IFS — open data since Oct 2025, native 9km ───────────────────────
-// Better medium-range skill than GFS/HRRR past ~day 5. Independent model — if
-// ECMWF and GFS agree, that's a stronger signal than either alone.
-function fetchNodeECMWF(lat, lon) {
-  var params = new URLSearchParams({
-    latitude: lat,
-    longitude: lon,
-    hourly: "temperature_2m,precipitation,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,cape",
-    temperature_unit: "fahrenheit",
-    wind_speed_unit: "mph",
-    precipitation_unit: "inch",
-    timezone: "auto",
-    forecast_days: "10"
-  });
-  return fetchWithTimeout(
-    "https://api.open-meteo.com/v1/ecmwf?" + params,
-    { cache: "no-store" },
-    TIMEOUT_OPEN_METEO
-  ).then(function(r) {
-    if (!r.ok) throw new Error("ECMWF " + r.status);
-    return r.json();
-  });
-}
-
-// ─── Ensemble Spread — ICON EPS, 40 members ──────────────────────────────────
-// Returns p10/median/p90 spread for temp and precip. Wide spread = low
-// confidence. Claude can use this to qualify deterministic forecast certainty.
-function fetchNodeEnsemble(lat, lon) {
-  var params = new URLSearchParams({
-    latitude: lat,
-    longitude: lon,
-    hourly: "temperature_2m,precipitation",
-    models: "icon_seamless",
-    temperature_unit: "fahrenheit",
-    precipitation_unit: "inch",
-    timezone: "auto",
-    forecast_days: "7"
-  });
-  return fetchWithTimeout(
-    "https://ensemble-api.open-meteo.com/v1/ensemble?" + params,
-    { cache: "no-store" },
-    TIMEOUT_OPEN_METEO
-  ).then(function(r) {
-    if (!r.ok) throw new Error("Ensemble " + r.status);
-    return r.json();
-  }).then(function(d) {
-    if (!d.hourly) return null;
-    var h = d.hourly;
-    var times = h.time || [];
-    // Collect all member arrays for each variable
-    function getMembers(prefix) {
-      var m = [];
-      for (var k in h) { if (k.indexOf(prefix + "_member") === 0) m.push(h[k]); }
-      return m;
-    }
-    function pct(arr, p) {
-      var s = arr.slice().sort(function(a,b){return a-b;});
-      return s[Math.floor(s.length * p)] || null;
-    }
-    function spreadForVar(prefix) {
-      var members = getMembers(prefix);
-      if (!members.length) return null;
-      var p10=[], med=[], p90=[], mn=[];
-      for (var i=0; i<times.length; i++) {
-        var vals = members.map(function(m){return m[i];}).filter(function(v){return v!=null;});
-        if (!vals.length) { p10.push(null);med.push(null);p90.push(null);mn.push(null); continue; }
-        p10.push(Math.round(pct(vals,0.1)*10)/10);
-        med.push(Math.round(pct(vals,0.5)*10)/10);
-        p90.push(Math.round(pct(vals,0.9)*10)/10);
-        mn.push(Math.round(vals.reduce(function(a,b){return a+b;},0)/vals.length*10)/10);
+// ── NWS Gridpoint QPF ─────────────────────────────────────────────────────────
+// Authoritative QPF — same source as NWS hourly chart. Always-on for US nodes.
+function fetchNodeGridpoint(gridId,gridX,gridY){
+  return nwsGet("https://api.weather.gov/gridpoints/"+gridId+"/"+gridX+","+gridY,T_NWS_GRID)
+    .then(function(data){
+      var props=data.properties;
+      function parseFld(field){
+        if(!field||!field.values)return[];
+        return field.values.filter(function(v){return v.value!=null;}).map(function(v){
+          var parts=v.validTime.split("/"),m=parts[1]&&parts[1].match(/PT(\d+)H/);
+          return{start:parts[0],hours:m?parseInt(m[1]):1,value:v.value};
+        });
       }
-      return {p10:p10, median:med, p90:p90, mean:mn};
-    }
-    return {
-      model: "icon_seamless",
-      time: times,
-      member_count: getMembers("temperature_2m").length,
-      temperature_2m: spreadForVar("temperature_2m"),
-      precipitation:  spreadForVar("precipitation")
-    };
-  });
+      function toIn(mm){return mm!=null?Math.round(mm/25.4*1000)/1000:null;}
+      function toDailyIn(periods){
+        var days={};
+        periods.forEach(function(p){
+          var t0=new Date(p.start),rph=p.value/p.hours;
+          for(var h=0;h<p.hours;h++){var k=new Date(t0.getTime()+h*3600000).toISOString().slice(0,10);days[k]=(days[k]||0)+rph;}
+        });
+        return Object.keys(days).sort().map(function(k){return{date:k,precip_in:toIn(days[k])};});
+      }
+      var qpf=parseFld(props.quantitativePrecipitation);
+      var thunder=parseFld(props.probabilityOfThunder);
+      var snow=parseFld(props.snowfallAmount);
+      var ice=parseFld(props.iceAccumulation);
+      return{
+        source:"NWS Gridpoint "+gridId+" "+gridX+","+gridY,
+        qpf_periods:qpf.map(function(p){return{start:p.start,hours:p.hours,precip_in:toIn(p.value)};}),
+        qpf_daily_utc:toDailyIn(qpf),
+        thunder_prob:thunder.filter(function(p){return p.value>0;}).map(function(p){return{start:p.start,hours:p.hours,prob_pct:Math.round(p.value)};}),
+        snowfall_periods:snow.filter(function(p){return p.value>0;}).map(function(p){return{start:p.start,hours:p.hours,snow_in:toIn(p.value)};}),
+        ice_periods:ice.filter(function(p){return p.value>0;}).map(function(p){return{start:p.start,hours:p.hours,ice_in:toIn(p.value)};})
+      };
+    });
 }
 
-// ─── Climate Normals — Open-Meteo Historical Archive (ERA5) ─────────────────
-var CLIMATE_ARCHIVE_BASE = "https://archive-api.open-meteo.com/v1/archive";
+// ── NWS HWO ──────────────────────────────────────────────────────────────────
+function fetchHWO(officeId){
+  return nwsGet("https://api.weather.gov/products/types/HWO/locations/"+officeId,T_EXTRA)
+    .then(function(list){
+      var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;
+      if(!id)return null;
+      return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA)
+        .then(function(p){return{text:p.productText,issued:p.issuanceTime,office:officeId};});
+    });
+}
 
-function fetchNodeClimate(lat, lon) {
-  var params = new URLSearchParams({
-    latitude:           lat,
-    longitude:          lon,
-    start_date:         "2015-01-01",
-    end_date:           "2024-12-31",
-    daily:              "temperature_2m_max,temperature_2m_min,precipitation_sum",
-    temperature_unit:   "fahrenheit",
-    precipitation_unit: "inch",
-    timezone:           "auto"
+// ── SPC Convective Outlook ────────────────────────────────────────────────────
+function fetchSPCDay(type){
+  return nwsGet("https://api.weather.gov/products/types/"+type,T_EXTRA)
+    .then(function(list){
+      var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;
+      if(!id)return null;
+      return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA)
+        .then(function(p){
+          var text=p.productText||"",risks=[],re=/(HIGH|MDT|ENH|SLGT|MRGL|TSTM)\s+RISK/gi,m;
+          while((m=re.exec(text))!==null){var r=m[1].toUpperCase();if(risks.indexOf(r)===-1)risks.push(r);}
+          var ord={HIGH:6,MDT:5,ENH:4,SLGT:3,MRGL:2,TSTM:1};
+          risks.sort(function(a,b){return(ord[b]||0)-(ord[a]||0);});
+          return{type:type,text:text,issued:p.issuanceTime,risks:risks,max_risk:risks[0]||"TSTM"};
+        });
+    });
+}
+
+// ── Air Quality ───────────────────────────────────────────────────────────────
+function fetchNodeAQ(lat,lon){
+  var params=new URLSearchParams({
+    latitude:lat,longitude:lon,
+    hourly:"us_aqi,pm2_5,pm10,ozone,nitrogen_dioxide,dust,uv_index",
+    current:"us_aqi,pm2_5,pm10,ozone,dust",timezone:"auto",forecast_days:"3"
   });
-  return fetchWithTimeout(
-    CLIMATE_ARCHIVE_BASE + "?" + params,
-    { cache: "no-store" },
-    TIMEOUT_CLIMATE
-  ).then(function(r) {
-    if (!r.ok) throw new Error("Open-Meteo archive " + r.status);
-    return r.json();
-  }).then(function(d) {
-    if (!d.daily || !d.daily.time || !d.daily.time.length) return null;
+  return fetchWT("https://air-quality-api.open-meteo.com/v1/air-quality?"+params,{cache:"no-store"},T_OM)
+    .then(function(r){if(!r.ok)throw new Error("AQ "+r.status);return r.json();});
+}
 
-    var times  = d.daily.time;
-    var tmaxA  = d.daily.temperature_2m_max;
-    var tminA  = d.daily.temperature_2m_min;
-    var precipA = d.daily.precipitation_sum;
-    var MABBR = ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-    var MNAME = ["","January","February","March","April","May","June","July","August","September","October","November","December"];
+// ── Open-Meteo Forecast ───────────────────────────────────────────────────────
+function fetchNodeUV(lat,lon){
+  var hv="uv_index,uv_index_clear_sky,temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,weather_code";
+  if(STATE.omVars.qpf)hv+=",precipitation,rain,showers,snowfall";
+  if(STATE.omVars.convective)hv+=",cape,lifted_index,convective_inhibition";
+  if(STATE.omVars.bld)hv+=",boundary_layer_height";
+  if(STATE.omVars.freezing)hv+=",freezing_level_height,snowfall_height";
+  // Free-rider daily vars — always appended, zero extra cost
+  var dv="sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,uv_index_max,apparent_temperature_max,apparent_temperature_min,precipitation_probability_max,wind_direction_10m_dominant,shortwave_radiation_sum";
+  var params=new URLSearchParams({
+    latitude:lat,longitude:lon,hourly:hv,daily:dv,
+    temperature_unit:"fahrenheit",wind_speed_unit:"mph",precipitation_unit:"inch",
+    timezone:"auto",forecast_days:String(Math.max(7,Math.ceil(STATE.hourlyWindow/24)+1))
+  });
+  return fetchWT("https://api.open-meteo.com/v1/forecast?"+params,{cache:"no-store"},T_OM)
+    .then(function(r){if(!r.ok)throw new Error("OM "+r.status);return r.json();});
+}
 
-    function avg(arr) {
-      var v = arr.filter(function(x){return x!=null;});
-      if (!v.length) return null;
-      return Math.round(v.reduce(function(a,b){return a+b;},0)/v.length*10)/10;
-    }
-    function r2(v){return v!=null?Math.round(v*100)/100:null;}
+// ── ECMWF IFS ─────────────────────────────────────────────────────────────────
+function fetchNodeECMWF(lat,lon){
+  var params=new URLSearchParams({
+    latitude:lat,longitude:lon,
+    hourly:"temperature_2m,precipitation,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,cape",
+    temperature_unit:"fahrenheit",wind_speed_unit:"mph",precipitation_unit:"inch",
+    timezone:"auto",forecast_days:"10"
+  });
+  return fetchWT("https://api.open-meteo.com/v1/ecmwf?"+params,{cache:"no-store"},T_OM)
+    .then(function(r){if(!r.ok)throw new Error("ECMWF "+r.status);return r.json();});
+}
 
-    var byMonth = {};
-    var monthYearPrecip = {};
-    for (var m = 1; m <= 12; m++) byMonth[m] = {tmax:[], tmin:[]};
+// ── Ensemble Spread ────────────────────────────────────────────────────────────
+function fetchNodeEnsemble(lat,lon){
+  var params=new URLSearchParams({
+    latitude:lat,longitude:lon,hourly:"temperature_2m,precipitation",models:"icon_seamless",
+    temperature_unit:"fahrenheit",precipitation_unit:"inch",timezone:"auto",forecast_days:"7"
+  });
+  return fetchWT("https://ensemble-api.open-meteo.com/v1/ensemble?"+params,{cache:"no-store"},T_OM)
+    .then(function(r){if(!r.ok)throw new Error("Ens "+r.status);return r.json();})
+    .then(function(d){
+      if(!d.hourly)return null;
+      var h=d.hourly,times=h.time||[];
+      function getM(prefix){var m=[];for(var k in h){if(k.indexOf(prefix+"_member")===0)m.push(h[k]);}return m;}
+      function pct(arr,p){var s=arr.slice().sort(function(a,b){return a-b;});return s[Math.floor(s.length*p)]||null;}
+      function spread(prefix){
+        var members=getM(prefix);if(!members.length)return null;
+        var p10=[],med=[],p90=[];
+        for(var i=0;i<times.length;i++){
+          var vals=members.map(function(m){return m[i];}).filter(function(v){return v!=null;});
+          if(!vals.length){p10.push(null);med.push(null);p90.push(null);continue;}
+          p10.push(Math.round(pct(vals,0.1)*10)/10);med.push(Math.round(pct(vals,0.5)*10)/10);p90.push(Math.round(pct(vals,0.9)*10)/10);
+        }
+        return{p10:p10,median:med,p90:p90};
+      }
+      return{model:"icon_seamless",time:times,member_count:getM("temperature_2m").length,temperature_2m:spread("temperature_2m"),precipitation:spread("precipitation")};
+    });
+}
 
-    for (var i = 0; i < times.length; i++) {
-      var mo = parseInt(times[i].slice(5,7), 10);
-      var yr = times[i].slice(0,4);
-      if (tmaxA[i]  != null) byMonth[mo].tmax.push(tmaxA[i]);
-      if (tminA[i]  != null) byMonth[mo].tmin.push(tminA[i]);
-      var mpKey = yr + "-" + mo;
-      if (!monthYearPrecip[mpKey]) monthYearPrecip[mpKey] = {month: mo, total: 0};
-      if (precipA[i] != null) monthYearPrecip[mpKey].total += precipA[i];
-    }
+// ── ERA5 Climate Normals ───────────────────────────────────────────────────────
+function fetchNodeClimate(lat,lon){
+  var params=new URLSearchParams({latitude:lat,longitude:lon,start_date:"2015-01-01",end_date:"2024-12-31",daily:"temperature_2m_max,temperature_2m_min,precipitation_sum",temperature_unit:"fahrenheit",precipitation_unit:"inch",timezone:"auto"});
+  return fetchWT("https://archive-api.open-meteo.com/v1/archive?"+params,{cache:"no-store"},T_CLIMATE)
+    .then(function(r){if(!r.ok)throw new Error("Archive "+r.status);return r.json();})
+    .then(function(d){
+      if(!d.daily||!d.daily.time||!d.daily.time.length)return null;
+      var times=d.daily.time,tmx=d.daily.temperature_2m_max,tmn=d.daily.temperature_2m_min,pr=d.daily.precipitation_sum;
+      var MABBR=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      var MNAME=["","January","February","March","April","May","June","July","August","September","October","November","December"];
+      function avg(arr){var v=arr.filter(function(x){return x!=null;});if(!v.length)return null;return Math.round(v.reduce(function(a,b){return a+b;},0)/v.length*10)/10;}
+      function r2(v){return v!=null?Math.round(v*100)/100:null;}
+      var byM={},mprecip={};
+      for(var m=1;m<=12;m++)byM[m]={hi:[],lo:[]};
+      for(var i=0;i<times.length;i++){
+        var mo=parseInt(times[i].slice(5,7)),yr=times[i].slice(0,4);
+        if(tmx[i]!=null)byM[mo].hi.push(tmx[i]);
+        if(tmn[i]!=null)byM[mo].lo.push(tmn[i]);
+        var mk=yr+"-"+mo;if(!mprecip[mk])mprecip[mk]={m:mo,t:0};if(pr[i]!=null)mprecip[mk].t+=pr[i];
+      }
+      var mps={};for(var k in mprecip){var e=mprecip[k];if(!mps[e.m])mps[e.m]=[];mps[e.m].push(e.t);}
+      var months=[];
+      for(var m=1;m<=12;m++){
+        var mp=mps[m]||[];var ap=mp.length?r2(mp.reduce(function(a,b){return a+b;},0)/mp.length):null;
+        months.push({month:m,month_abbr:MABBR[m],month_name:MNAME[m],normal_high_f:avg(byM[m].hi),normal_low_f:avg(byM[m].lo),normal_precip_in:ap});
+      }
+      var now=new Date(),todayMo=now.getMonth()+1,todayDa=now.getDate();
+      var winSet={};
+      for(var offset=-3;offset<=3;offset++){var probe=new Date(2024,todayMo-1,todayDa+offset);winSet[probe.getMonth()*100+probe.getDate()]=true;}
+      var whi=[],wlo=[],wpr=[];
+      for(var i=0;i<times.length;i++){var mo2=parseInt(times[i].slice(5,7)),da=parseInt(times[i].slice(8,10));if(winSet[mo2*100+da]){if(tmx[i]!=null)whi.push(tmx[i]);if(tmn[i]!=null)wlo.push(tmn[i]);if(pr[i]!=null)wpr.push(pr[i]);}}
+      var todayWindow=whi.length>=5?{sample_size:whi.length,normal_high_f:avg(whi),normal_low_f:avg(wlo),avg_daily_precip_in:avg(wpr)}:null;
+      return{period:"ERA5 2015–2024",source:"Open-Meteo Historical Archive (ERA5 reanalysis)",station_name:"ERA5 grid "+d.latitude.toFixed(2)+"°N "+Math.abs(d.longitude).toFixed(2)+"°"+(d.longitude<0?"W":"E"),current_month_index:todayMo,months:months,today_window:todayWindow};
+    }).catch(function(e){console.log("[WS] Climate:",e.message);return null;});
+}
 
-    var monthPrecipSums = {};
-    for (var key in monthYearPrecip) {
-      var mo2 = monthYearPrecip[key].month;
-      if (!monthPrecipSums[mo2]) monthPrecipSums[mo2] = [];
-      monthPrecipSums[mo2].push(monthYearPrecip[key].total);
-    }
-
-    var months = [];
-    for (var m = 1; m <= 12; m++) {
-      var mpArr = monthPrecipSums[m] || [];
-      var avgPrecip = mpArr.length
-        ? r2(mpArr.reduce(function(a,b){return a+b;},0) / mpArr.length)
-        : null;
-      months.push({
-        month: m, month_abbr: MABBR[m], month_name: MNAME[m],
-        normal_high_f:    avg(byMonth[m].tmax),
-        normal_low_f:     avg(byMonth[m].tmin),
-        normal_precip_in: avgPrecip,
-        normal_snow_in:   null
+// ── Extra NWS products ────────────────────────────────────────────────────────
+function fetchERO(){
+  return nwsGet("https://api.weather.gov/products/types/ERO/locations/WPC",T_EXTRA)
+    .then(function(list){var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;if(!id)return null;
+      return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA).then(function(p){
+        var text=p.productText||"",risks=[],re=/(HIGH|ENHANCED|SLIGHT|MARGINAL)\s+RISK/gi,m;
+        while((m=re.exec(text))!==null){var r=m[1].toUpperCase();if(risks.indexOf(r)===-1)risks.push(r);}
+        var ord={HIGH:4,ENHANCED:3,SLIGHT:2,MARGINAL:1};risks.sort(function(a,b){return(ord[b]||0)-(ord[a]||0);});
+        return{text:text,issued:p.issuanceTime,risks:risks};
       });
-    }
-
-    var now    = new Date();
-    var todayMo = now.getMonth() + 1;
-    var todayDa = now.getDate();
-
-    var winPairs = [];
-    for (var offset = -3; offset <= 3; offset++) {
-      var probe = new Date(2024, todayMo - 1, todayDa + offset);
-      winPairs.push(probe.getMonth() * 100 + probe.getDate());
-    }
-    var winSet = {};
-    winPairs.forEach(function(k){ winSet[k] = true; });
-
-    var winTmax = [], winTmin = [], winPrecip = [];
-    for (var i = 0; i < times.length; i++) {
-      var mo3 = parseInt(times[i].slice(5,7), 10);
-      var da3 = parseInt(times[i].slice(8,10), 10);
-      if (winSet[mo3 * 100 + da3]) {
-        if (tmaxA[i]  != null) winTmax.push(tmaxA[i]);
-        if (tminA[i]  != null) winTmin.push(tminA[i]);
-        if (precipA[i] != null) winPrecip.push(precipA[i]);
-      }
-    }
-
-    var todayWindow = null;
-    if (winTmax.length >= 5) {
-      todayWindow = {
-        center: (todayMo < 10?"0":"")+todayMo+"-"+(todayDa<10?"0":"")+todayDa,
-        sample_size:     winTmax.length,
-        normal_high_f:   avg(winTmax),
-        normal_low_f:    avg(winTmin),
-        avg_daily_precip_in: avg(winPrecip)
-      };
-    }
-
-    var gridLat = d.latitude  != null ? d.latitude.toFixed(2)  : lat.toFixed(2);
-    var gridLon = d.longitude != null ? d.longitude.toFixed(2) : lon.toFixed(2);
-
-    return {
-      period:               "ERA5 2015–2024",
-      source:               "Open-Meteo Historical Archive (ERA5 reanalysis, 10-year computed average)",
-      station_id:           null,
-      station_name:         "ERA5 grid " + gridLat + "°N, " + Math.abs(gridLon) + "°" + (parseFloat(gridLon) < 0 ? "W" : "E"),
-      current_month_index:  todayMo,
-      months:               months,
-      today_window:         todayWindow
-    };
-  }).catch(function(e) {
-    console.log("[WS] Climate error:", e.message);
-    return null;
-  });
+    });
 }
-
-// ─── Extra NWS Products ──────────────────────────────────
-// WPC ERO — Excessive Rainfall Outlook (Day 1)
-// National product from Weather Prediction Center. Risk categories (Marginal/
-// Slight/Enhanced/High) are formal signals from WPC forecasters that training
-// risk exists in an area. Independent from local NWS office AFD.
-function fetchERO() {
-  return nwsFetch("https://api.weather.gov/products/types/ERO/locations/WPC", TIMEOUT_EXTRA)
-    .then(function(list) {
-      var id = list["@graph"] && list["@graph"][0] ? list["@graph"][0].id : null;
-      if (!id) return null;
-      return nwsFetch("https://api.weather.gov/products/" + id, TIMEOUT_EXTRA)
-        .then(function(p) {
-          var text = p.productText || "";
-          // Parse risk level mentions from product text
-          var risks = [];
-          var riskRe = /(HIGH|ENHANCED|SLIGHT|MARGINAL)\s+RISK/gi;
-          var m;
-          while ((m = riskRe.exec(text)) !== null) {
-            var r = m[1].toUpperCase();
-            if (risks.indexOf(r) === -1) risks.push(r);
-          }
-          var riskOrder = { HIGH: 4, ENHANCED: 3, SLIGHT: 2, MARGINAL: 1 };
-          risks.sort(function(a, b) { return (riskOrder[b]||0) - (riskOrder[a]||0); });
-          return { text: text, issued: p.issuanceTime, risks: risks };
-        });
+function fetchMPD(){
+  return nwsGet("https://api.weather.gov/products/types/MPD/locations/WPC",T_EXTRA)
+    .then(function(list){
+      var items=(list["@graph"]||[]).slice(0,3);if(!items.length)return[];
+      return Promise.all(items.map(function(item){return nwsGet("https://api.weather.gov/products/"+item.id,T_EXTRA).then(function(p){return{text:p.productText,issued:p.issuanceTime};}).catch(function(){return null;});})).then(function(r){return r.filter(Boolean);});
+    });
+}
+function fetchLSR(office){
+  return nwsGet("https://api.weather.gov/products/types/LSR/locations/"+office,T_EXTRA)
+    .then(function(list){var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;if(!id)return null;return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA).then(function(p){return{text:p.productText,issued:p.issuanceTime,office:office};});});
+}
+function fetchASOSPrecip(stationId){
+  return nwsGet("https://api.weather.gov/stations/"+stationId+"/observations?limit=24",T_NWS_FC)
+    .then(function(data){
+      var obs=(data.features||[]).map(function(f){var p=f.properties;return{timestamp:p.timestamp,precip_1hr_in:mmIn(p.precipitationLastHour?p.precipitationLastHour.value:null),precip_3hr_in:mmIn(p.precipitationLast3Hours?p.precipitationLast3Hours.value:null),precip_6hr_in:mmIn(p.precipitationLast6Hours?p.precipitationLast6Hours.value:null),sky:p.textDescription||null};}).filter(function(o){return o.precip_1hr_in!==null||o.precip_3hr_in!==null||o.precip_6hr_in!==null;});
+      return{station:stationId,observations:obs};
     });
 }
 
-// WPC MPD — Mesoscale Precipitation Discussion
-// Issued in real time during active events, often before the local AFD is
-// updated. Fetch up to 3 most recent so active events show the full thread.
-function fetchMPD() {
-  return nwsFetch("https://api.weather.gov/products/types/MPD/locations/WPC", TIMEOUT_EXTRA)
-    .then(function(list) {
-      var items = list["@graph"] || [];
-      if (!items.length) return [];
-      return Promise.all(items.slice(0, 3).map(function(item) {
-        return nwsFetch("https://api.weather.gov/products/" + item.id, TIMEOUT_EXTRA)
-          .then(function(p) {
-            return { text: p.productText, issued: p.issuanceTime, id: item.id };
-          }).catch(function() { return null; });
-      })).then(function(res) { return res.filter(Boolean); });
-    });
-}
-
-// LSR — Local Storm Reports
-// Ground truth from spotters/automated stations. Requires the NWS office ID
-// from the /points response, so called after NWS data resolves.
-function fetchLSR(officeId) {
-  return nwsFetch("https://api.weather.gov/products/types/LSR/locations/" + officeId, TIMEOUT_EXTRA)
-    .then(function(list) {
-      var items = list["@graph"] || [];
-      if (!items.length) return null;
-      return nwsFetch("https://api.weather.gov/products/" + items[0].id, TIMEOUT_EXTRA)
-        .then(function(p) {
-          return { text: p.productText, issued: p.issuanceTime, office: officeId };
-        });
-    });
-}
-
-// ASOS Hourly Precip — measured rainfall at the NWS obs station
-// Fetches last 24 observations, extracts precip accumulations (1hr/3hr/6hr),
-// converts from mm to inches. Requires station ID from NWS data.
-function fetchASOSPrecip(stationId) {
-  return nwsFetch(
-    "https://api.weather.gov/stations/" + stationId + "/observations?limit=24",
-    TIMEOUT_NWS_FORECAST
-  ).then(function(data) {
-    var features = data.features || [];
-    var obs = features.map(function(f) {
-      var p = f.properties;
-      return {
-        timestamp:     p.timestamp,
-        precip_1hr_in: mmToIn(p.precipitationLastHour   ? p.precipitationLastHour.value   : null),
-        precip_3hr_in: mmToIn(p.precipitationLast3Hours ? p.precipitationLast3Hours.value  : null),
-        precip_6hr_in: mmToIn(p.precipitationLast6Hours ? p.precipitationLast6Hours.value  : null),
-        temp_f:        cToF(p.temperature ? p.temperature.value : null),
-        sky:           p.textDescription || null
-      };
-    }).filter(function(o) {
-      // Only return rows that have any precip field (even zero is useful)
-      return o.precip_1hr_in !== null || o.precip_3hr_in !== null || o.precip_6hr_in !== null;
-    });
-    return { station: stationId, observations: obs };
-  });
-}
-
-// ─── Geocoding ──────────────────────────────────────────
+// ── Geocoding ─────────────────────────────────────────────────────────────────
 function resolveLocation(input){
   var el=document.getElementById("geocode-status");el.style.color="var(--dim)";el.textContent="Resolving…";
-  var coordMatch=input.match(/^([+-]?\d{1,3}\.?\d*)[,\s\/]+([+-]?\d{1,3}\.?\d*)$/);
-  if(coordMatch){var lat=parseFloat(coordMatch[1]),lon=parseFloat(coordMatch[2]);if(lat>=-90&&lat<=90&&lon>=-180&&lon<=180){el.style.color="var(--success)";el.textContent="✓ "+lat.toFixed(4)+", "+lon.toFixed(4);return fetchWithTimeout("https://nominatim.openstreetmap.org/reverse?format=json&lat="+lat+"&lon="+lon+"&zoom=12",{headers:{"User-Agent":"WeatherStation/1.0"}},TIMEOUT_GEOCODE).then(function(r){return r.json()}).then(function(d){var a=d.address||{};var label=[a.city||a.town||a.village||a.hamlet,a.state].filter(Boolean).join(", ")||lat.toFixed(4)+", "+lon.toFixed(4);el.textContent="✓ "+label;return{lat:lat,lon:lon,label:label}}).catch(function(){return{lat:lat,lon:lon,label:lat.toFixed(4)+", "+lon.toFixed(4)}})}}
-  var q=input;if(input.match(/^\d{5}(-\d{4})?$/))q+=", USA";
-  return fetchWithTimeout("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&countrycodes=us,ca,gb,au,nz,ie&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},TIMEOUT_GEOCODE).then(function(r){return r.json()}).then(function(results){
-    if(!results.length)return fetchWithTimeout("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},TIMEOUT_GEOCODE).then(function(r){return r.json()});
-    return results;
-  }).then(function(results){
-    if(!results.length){el.style.color="var(--danger)";el.textContent="✗ Not found: \""+input+"\"";return null}
-    var hit=results[0],lat=parseFloat(hit.lat),lon=parseFloat(hit.lon),a=hit.address||{};
-    var label=(a.city||a.town||a.village||a.hamlet)?((a.city||a.town||a.village||a.hamlet)+", "+(a.state||a.country||"")):hit.display_name?hit.display_name.split(",").slice(0,2).join(",").trim():input;
-    el.style.color="var(--success)";el.textContent="✓ "+label+" ("+lat.toFixed(4)+", "+lon.toFixed(4)+")";
-    return{lat:lat,lon:lon,label:label};
-  }).catch(function(e){el.style.color="var(--danger)";el.textContent="✗ Error: "+e.message;return null});
+  var coordM=input.match(/^([+-]?\d{1,3}\.?\d*)[,\s\/]+([+-]?\d{1,3}\.?\d*)$/);
+  if(coordM){
+    var lat=parseFloat(coordM[1]),lon=parseFloat(coordM[2]);
+    if(lat>=-90&&lat<=90&&lon>=-180&&lon<=180){
+      el.style.color="var(--success)";el.textContent="✓ "+lat.toFixed(4)+", "+lon.toFixed(4);
+      return fetchWT("https://nominatim.openstreetmap.org/reverse?format=json&lat="+lat+"&lon="+lon+"&zoom=12",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO)
+        .then(function(r){return r.json();}).then(function(d){var a=d.address||{};var lbl=[a.city||a.town||a.village||a.hamlet,a.state].filter(Boolean).join(", ")||lat.toFixed(4)+", "+lon.toFixed(4);el.textContent="✓ "+lbl;return{lat:lat,lon:lon,label:lbl};}).catch(function(){return{lat:lat,lon:lon,label:lat.toFixed(4)+", "+lon.toFixed(4)};});
+    }
+  }
+  var q=input.match(/^\d{5}(-\d{4})?$/)?(input+", USA"):input;
+  return fetchWT("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&countrycodes=us,ca,gb,au,nz,ie&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO)
+    .then(function(r){return r.json();}).then(function(results){
+      if(!results.length)return fetchWT("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO).then(function(r){return r.json();});
+      return results;
+    }).then(function(results){
+      if(!results.length){el.style.color="var(--danger)";el.textContent="✗ Not found: "+input;return null;}
+      var hit=results[0],lat=parseFloat(hit.lat),lon=parseFloat(hit.lon),a=hit.address||{};
+      var lbl=(a.city||a.town||a.village||a.hamlet)?((a.city||a.town||a.village||a.hamlet)+", "+(a.state||a.country||"")):hit.display_name.split(",").slice(0,2).join(",").trim();
+      el.style.color="var(--success)";el.textContent="✓ "+lbl+" ("+lat.toFixed(4)+", "+lon.toFixed(4)+")";
+      return{lat:lat,lon:lon,label:lbl};
+    }).catch(function(e){el.style.color="var(--danger)";el.textContent="✗ Error: "+e.message;return null;});
 }
 
-// ─── Node Management ────────────────────────────────────
+// ── Node Management ───────────────────────────────────────────────────────────
+function newNode(id,label,lat,lon,role){
+  return{id:id,label:label,lat:lat,lon:lon,role:role,nws:null,uv:null,climate:null,gridpoint:null,aq:null,ero:null,mpd:null,lsr:null,asosPrecip:null,hwo:null,ecmwf:null,ensemble:null,errors:[],timeouts:[],status:"idle"};
+}
 function addNode(){
   var input=document.getElementById("input-location").value.trim();if(!input)return;
   var role=document.getElementById("input-role").value;
   resolveLocation(input).then(function(loc){
     if(!loc)return;
-    var id="n"+(STATE.nextId++);
-    STATE.nodes.push({id:id,label:loc.label,lat:loc.lat,lon:loc.lon,role:role,nws:null,uv:null,climate:null,ero:null,mpd:null,lsr:null,asosPrecip:null,ecmwf:null,ensemble:null,errors:[],timeouts:[],status:"idle"});
+    var id="n"+(STATE.nextId++);STATE.nodes.push(newNode(id,loc.label,loc.lat,loc.lon,role));
     document.getElementById("input-location").value="";
-    renderNodeList();renderTabs();
-    fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);
+    renderNodeList();renderTabs();fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);
   });
 }
-function removeNode(id){STATE.nodes=STATE.nodes.filter(function(n){return n.id!==id});if(STATE.activeTab===id)STATE.activeTab=STATE.nodes[0]?STATE.nodes[0].id:"";renderNodeList();renderTabs();renderActivePanel()}
+function removeNode(id){STATE.nodes=STATE.nodes.filter(function(n){return n.id!==id;});if(STATE.activeTab===id)STATE.activeTab=STATE.nodes[0]?STATE.nodes[0].id:"";renderNodeList();renderTabs();renderActivePanel();}
 function addPreset(i){
-  var p=PRESETS[i];
-  if(STATE.nodes.some(function(n){return Math.abs(n.lat-p.lat)<0.01&&Math.abs(n.lon-p.lon)<0.01})){document.getElementById("geocode-status").style.color="var(--warn)";document.getElementById("geocode-status").textContent="Already added: "+p.label;return}
-  var id="n"+(STATE.nextId++);STATE.nodes.push({id:id,label:p.label,lat:p.lat,lon:p.lon,role:p.role,nws:null,uv:null,climate:null,ero:null,mpd:null,lsr:null,asosPrecip:null,ecmwf:null,ensemble:null,errors:[],timeouts:[],status:"idle"});
+  var p=PRESETS[i];if(STATE.nodes.some(function(n){return Math.abs(n.lat-p.lat)<0.01&&Math.abs(n.lon-p.lon)<0.01;})){return;}
+  var id="n"+(STATE.nextId++);STATE.nodes.push(newNode(id,p.label,p.lat,p.lon,p.role));
   renderNodeList();renderTabs();fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);
 }
 
-// ─── Fetch ──────────────────────────────────────────────
+// ── Fetch Orchestration ───────────────────────────────────────────────────────
 function fetchSingleNode(node){
-  node.status="loading";
-  node.errors=[];node.timeouts=[];
-  node.climate=null;node.ero=null;node.mpd=null;node.lsr=null;node.asosPrecip=null;
-  node.ecmwf=null;node.ensemble=null;
+  node.status="loading";node.errors=[];node.timeouts=[];
+  node.gridpoint=null;node.aq=null;node.hwo=null;node.ero=null;node.mpd=null;node.lsr=null;node.asosPrecip=null;node.ecmwf=null;node.ensemble=null;
   renderNodeList();renderTabs();
-
-  var nwsP = fetchNodeNWS(node.lat, node.lon)
-    .then(function(d) { node.nws = d; })
-    .catch(function(e) {
-      var msg = e.isTimeout ? "NWS: timed out after " + (TIMEOUT_NWS_POINTS/1000).toFixed(0) + "s" : "NWS: " + e.message;
-      node.errors.push(msg);
-      if (e.isTimeout) node.timeouts.push("NWS");
-      node.nws = null;
-    });
-
-  var uvP = fetchNodeUV(node.lat, node.lon)
-    .then(function(d) { node.uv = d; })
-    .catch(function(e) {
-      var msg = e.isTimeout ? "Open-Meteo: timed out" : "Open-Meteo: " + e.message;
-      node.errors.push(msg);
-      if (e.isTimeout) node.timeouts.push("Open-Meteo");
-      node.uv = null;
-    });
-
-  var climateP = fetchNodeClimate(node.lat, node.lon)
-    .then(function(d) { node.climate = d; })
-    .catch(function() { node.climate = null; });
-
-  // Main data first — extra products that need office/station ID run after
-  return Promise.all([nwsP, uvP, climateP]).then(function() {
-    var extraPromises = [];
-
-    if (STATE.extraProducts.ero) {
-      extraPromises.push(
-        fetchERO()
-          .then(function(d) { node.ero = d; })
-          .catch(function(e) { node.errors.push("ERO: " + e.message); })
-      );
+  var nwsP=fetchNodeNWS(node.lat,node.lon).then(function(d){node.nws=d;}).catch(function(e){node.errors.push(e.isTimeout?"NWS: timed out":"NWS: "+e.message);if(e.isTimeout)node.timeouts.push("NWS");node.nws=null;});
+  var uvP=fetchNodeUV(node.lat,node.lon).then(function(d){node.uv=d;}).catch(function(e){node.errors.push(e.isTimeout?"Open-Meteo: timed out":"OM: "+e.message);if(e.isTimeout)node.timeouts.push("OM");node.uv=null;});
+  var climP=fetchNodeClimate(node.lat,node.lon).then(function(d){node.climate=d;}).catch(function(){node.climate=null;});
+  return Promise.all([nwsP,uvP,climP]).then(function(){
+    var extras=[];
+    // NWS Gridpoint QPF — always-on for US nodes
+    if(node.nws&&node.nws.gridId&&node.nws.gridX!=null){
+      extras.push(fetchNodeGridpoint(node.nws.gridId,node.nws.gridX,node.nws.gridY).then(function(d){node.gridpoint=d;}).catch(function(e){node.errors.push("NWS QPF: "+e.message);}));
     }
-
-    if (STATE.extraProducts.mpd) {
-      extraPromises.push(
-        fetchMPD()
-          .then(function(d) { node.mpd = d; })
-          .catch(function(e) { node.errors.push("MPD: " + e.message); })
-      );
-    }
-
-    // LSR requires office ID from NWS /points response
-    if (STATE.extraProducts.lsr && node.nws && node.nws.office) {
-      extraPromises.push(
-        fetchLSR(node.nws.office)
-          .then(function(d) { node.lsr = d; })
-          .catch(function(e) { node.errors.push("LSR: " + e.message); })
-      );
-    }
-
-    // ASOS precip requires station ID from NWS /points response
-    if (STATE.extraProducts.asosPrecip && node.nws && node.nws.stationId) {
-      extraPromises.push(
-        fetchASOSPrecip(node.nws.stationId)
-          .then(function(d) { node.asosPrecip = d; })
-          .catch(function(e) { node.errors.push("ASOS Precip: " + e.message); })
-      );
-    }
-
-    // ECMWF IFS — independent medium-range model
-    if (STATE.omModels.ecmwf) {
-      extraPromises.push(
-        fetchNodeECMWF(node.lat, node.lon)
-          .then(function(d) { node.ecmwf = d; })
-          .catch(function(e) { node.errors.push("ECMWF: " + e.message); })
-      );
-    }
-
-    // Ensemble spread — ICON EPS
-    if (STATE.omModels.ensemble) {
-      extraPromises.push(
-        fetchNodeEnsemble(node.lat, node.lon)
-          .then(function(d) { node.ensemble = d; })
-          .catch(function(e) { node.errors.push("Ensemble: " + e.message); })
-      );
-    }
-
-    return Promise.all(extraPromises);
-  }).then(function() {
-    node.status = (node.nws || node.uv) ? "ready" : "error";
+    if(STATE.extraProducts.aq)extras.push(fetchNodeAQ(node.lat,node.lon).then(function(d){node.aq=d;}).catch(function(e){node.errors.push("AQ: "+e.message);}));
+    if(STATE.extraProducts.ero)extras.push(fetchERO().then(function(d){node.ero=d;}).catch(function(e){node.errors.push("ERO: "+e.message);}));
+    if(STATE.extraProducts.mpd)extras.push(fetchMPD().then(function(d){node.mpd=d;}).catch(function(e){node.errors.push("MPD: "+e.message);}));
+    if(STATE.extraProducts.lsr&&node.nws&&node.nws.office)extras.push(fetchLSR(node.nws.office).then(function(d){node.lsr=d;}).catch(function(e){node.errors.push("LSR: "+e.message);}));
+    if(STATE.extraProducts.asosPrecip&&node.nws&&node.nws.stationId)extras.push(fetchASOSPrecip(node.nws.stationId).then(function(d){node.asosPrecip=d;}).catch(function(e){node.errors.push("ASOS: "+e.message);}));
+    if(STATE.extraProducts.hwo&&node.nws&&node.nws.office)extras.push(fetchHWO(node.nws.office).then(function(d){node.hwo=d;}).catch(function(e){node.errors.push("HWO: "+e.message);}));
+    if(STATE.omModels.ecmwf)extras.push(fetchNodeECMWF(node.lat,node.lon).then(function(d){node.ecmwf=d;}).catch(function(e){node.errors.push("ECMWF: "+e.message);}));
+    if(STATE.omModels.ensemble)extras.push(fetchNodeEnsemble(node.lat,node.lon).then(function(d){node.ensemble=d;}).catch(function(e){node.errors.push("Ensemble: "+e.message);}));
+    return Promise.all(extras);
+  }).then(function(){
+    node.status=(node.nws||node.uv)?"ready":"error";
     renderNodeList();renderTabs();renderActivePanel();updateActionBar();
   });
 }
@@ -998,595 +660,402 @@ function fetchSingleNode(node){
 function fetchAllNodes(){
   var btn=document.getElementById("refresh-btn");btn.disabled=true;btn.textContent="Fetching…";
   document.getElementById("loading").style.display="block";
+  // SPC — national product, fetched once
+  var spcP=Promise.resolve();
+  if(STATE.extraProducts.spc){
+    spcP=Promise.all([fetchSPCDay("SWODY1").catch(function(){return null;}),fetchSPCDay("SWODY2").catch(function(){return null;})]).then(function(r){STATE.spcData={day1:r[0],day2:r[1]};}).catch(function(){STATE.spcData=null;});
+  }
   var t0=Date.now();
-  Promise.all(STATE.nodes.map(function(n){return fetchSingleNode(n)})).then(function(){
-    STATE.fetchTime=Date.now()-t0;
-    document.getElementById("loading").style.display="none";
-    btn.disabled=false;btn.textContent="⟳ Fetch All";
+  Promise.all([spcP].concat(STATE.nodes.map(function(n){return fetchSingleNode(n);}))).then(function(){
+    STATE.fetchTime=Date.now()-t0;document.getElementById("loading").style.display="none";
+    btn.disabled=false;btn.textContent="↻ Fetch All";
     document.getElementById("fetch-time").textContent=(STATE.fetchTime/1000).toFixed(1)+"s";
     updateActionBar();
   });
 }
 function updateActionBar(){
-  var ready=STATE.nodes.filter(function(n){return n.status==="ready"}).length;
-  var total=STATE.nodes.length;
-  var bar=document.getElementById("action-bar");
-  bar.style.display="flex";
-  document.getElementById("action-info").innerHTML="<strong>"+ready+"/"+total+" nodes ready.</strong> Copy and paste into your Claude weather project.";
+  var rdy=STATE.nodes.filter(function(n){return n.status==="ready";}).length;
+  document.getElementById("action-bar").style.display="flex";
+  document.getElementById("action-info").innerHTML="<strong>"+rdy+"/"+STATE.nodes.length+" nodes ready.</strong> Copy and paste into your Claude weather project.";
 }
 
-// ─── Export ─────────────────────────────────────────────
+// ── Export Payload ─────────────────────────────────────────────────────────────
 function buildExportPayload(){
   var now=new Date();
   var nodes=STATE.nodes.map(function(node){
     var nws=node.nws,uv=node.uv,obs=nws?nws.observation:null;
-    var currentObs=null;
+    var curObs=null;
     if(obs){
-      var metar=obs.rawMessage||"";
-      var windOk=metar.length>0;
-      currentObs={
-        timestamp:obs.timestamp,
-        temperature_f:cToF(obs.temperature?obs.temperature.value:null),
-        dewpoint_f:cToF(obs.dewpoint?obs.dewpoint.value:null),
-        humidity_pct:obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,
-        wind_speed_mph:windOk?mpsToMph(obs.windSpeed?obs.windSpeed.value:null):null,
-        wind_direction:windOk?compass(obs.windDirection?obs.windDirection.value:null):"—",
-        wind_direction_deg:windOk?(obs.windDirection?obs.windDirection.value:null):null,
-        wind_gust_mph:windOk?mpsToMph(obs.windGust?obs.windGust.value:null):null,
-        visibility_mi:mToMi(obs.visibility?obs.visibility.value:null),
-        pressure_inhg:paToInHg(obs.barometricPressure?obs.barometricPressure.value:null),
-        sky:obs.textDescription,
-        raw_metar:metar
-      };
+      curObs={timestamp:obs.timestamp,temperature_f:cF(obs.temperature?obs.temperature.value:null),dewpoint_f:cF(obs.dewpoint?obs.dewpoint.value:null),humidity_pct:obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,wind_speed_mph:mphv(obs.windSpeed?obs.windSpeed.value:null),wind_direction:compass(obs.windDirection?obs.windDirection.value:null),wind_gust_mph:mphv(obs.windGust?obs.windGust.value:null),visibility_mi:mMi(obs.visibility?obs.visibility.value:null),pressure_inhg:inHg(obs.barometricPressure?obs.barometricPressure.value:null),sky:obs.textDescription,raw_metar:obs.rawMessage||null};
     }
-    var currentUV=null;
-    if(uv&&uv.hourly){var nowH=now.toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){currentUV=uv.hourly.uv_index[ui];break}}}
+    var curUV=null;if(uv&&uv.hourly){var nowH=now.toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){curUV=uv.hourly.uv_index[ui];break;}}}
     var hrs=STATE.hourlyWindow;
     var nwsHourly=(nws&&nws.hourly||[]).slice(0,hrs).map(function(h){
-      var hourUV=null;if(uv&&uv.hourly){var hk=h.startTime.slice(0,13);for(var j=0;j<(uv.hourly.time||[]).length;j++){if(uv.hourly.time[j].indexOf(hk)===0){hourUV=uv.hourly.uv_index[j];break}}}
-      return{time:h.startTime,temp_f:h.temperature,wind:h.windSpeed,wind_dir:h.windDirection,precip_pct:(h.probabilityOfPrecipitation&&h.probabilityOfPrecipitation.value)||0,sky:h.shortForecast,detailed:h.detailedForecast,uv_index:hourUV};
+      var huv=null;if(uv&&uv.hourly){var hk=h.startTime.slice(0,13);for(var j=0;j<(uv.hourly.time||[]).length;j++){if(uv.hourly.time[j].indexOf(hk)===0){huv=uv.hourly.uv_index[j];break;}}}
+      return{time:h.startTime,temp_f:h.temperature,wind:h.windSpeed,wind_dir:h.windDirection,precip_pct:(h.probabilityOfPrecipitation&&h.probabilityOfPrecipitation.value)||0,sky:h.shortForecast,detailed:h.detailedForecast,uv_index:huv};
     });
-    var forecast7day=(nws&&nws.forecast||[]).map(function(p){return{name:p.name,temp_f:p.temperature,temp_unit:p.temperatureUnit,wind:p.windSpeed,wind_dir:p.windDirection,precip_pct:(p.probabilityOfPrecipitation&&p.probabilityOfPrecipitation.value)||0,sky:p.shortForecast,narrative:p.detailedForecast}});
-    var alerts=(nws&&nws.alerts||[]).map(function(a){return{event:a.properties.event,severity:a.properties.severity,headline:a.properties.headline,onset:a.properties.onset,expires:a.properties.expires,description:a.properties.description}});
-    var afdText=null;
-    if(nws&&nws.afd&&STATE.afdMode!=="none"){afdText=STATE.afdMode==="summary"?nws.afd.slice(0,2000)+(nws.afd.length>2000?"\n[...truncated]":""):nws.afd}
-    var omHourly=null;
-    if(uv&&uv.hourly){var times=uv.hourly.time||[];omHourly=[];for(var k=0;k<Math.min(times.length,hrs);k++){var t=new Date(times[k]);if(t<new Date(now.getTime()-3600000))continue;omHourly.push({time:times[k],uv_index:uv.hourly.uv_index[k],temp_f:uv.hourly.temperature_2m[k],feels_like_f:uv.hourly.apparent_temperature[k],humidity_pct:uv.hourly.relative_humidity_2m[k],dewpoint_f:uv.hourly.dew_point_2m[k],precip_pct:uv.hourly.precipitation_probability[k],wind_mph:uv.hourly.wind_speed_10m[k],wind_dir_deg:uv.hourly.wind_direction_10m[k],wind_gust_mph:uv.hourly.wind_gusts_10m[k],cloud_cover_pct:uv.hourly.cloud_cover[k]})}}
-    var omDaily=null;
-    var astronomy=null;
+    var fc7=(nws&&nws.forecast||[]).map(function(p){return{name:p.name,temp_f:p.temperature,temp_unit:p.temperatureUnit,wind:p.windSpeed,wind_dir:p.windDirection,precip_pct:(p.probabilityOfPrecipitation&&p.probabilityOfPrecipitation.value)||0,sky:p.shortForecast,narrative:p.detailedForecast};});
+    var alerts=(nws&&nws.alerts||[]).map(function(a){return{event:a.properties.event,severity:a.properties.severity,headline:a.properties.headline,onset:a.properties.onset,expires:a.properties.expires};});
+    var afdTxt=nws&&nws.afd&&STATE.afdMode!=="none"?(STATE.afdMode==="summary"?nws.afd.slice(0,2000)+(nws.afd.length>2000?"\n[truncated]":""):nws.afd):null;
+    var omH=null;
+    if(uv&&uv.hourly){
+      var times=uv.hourly.time||[];omH=[];
+      for(var k=0;k<Math.min(times.length,hrs);k++){
+        var t=new Date(times[k]);if(t<new Date(now.getTime()-3600000))continue;
+        var e={time:times[k],uv_index:uv.hourly.uv_index[k],temp_f:uv.hourly.temperature_2m[k],feels_like_f:uv.hourly.apparent_temperature[k],humidity_pct:uv.hourly.relative_humidity_2m[k],dewpoint_f:uv.hourly.dew_point_2m[k],precip_pct:uv.hourly.precipitation_probability[k],wind_mph:uv.hourly.wind_speed_10m[k],wind_dir_deg:uv.hourly.wind_direction_10m[k],wind_gust_mph:uv.hourly.wind_gusts_10m[k],cloud_cover_pct:uv.hourly.cloud_cover[k],weather_code:uv.hourly.weather_code?uv.hourly.weather_code[k]:null};
+        if(STATE.omVars.qpf&&uv.hourly.precipitation)e.precip_in=uv.hourly.precipitation[k];
+        if(STATE.omVars.convective&&uv.hourly.cape)e.cape=uv.hourly.cape[k];
+        omH.push(e);
+      }
+    }
+    var omD=null,astro=null;
     if(uv&&uv.daily){
-      var dailyTimes=uv.daily.time||[];
-      omDaily=dailyTimes.map(function(date,di){
-        var srISO=uv.daily.sunrise?uv.daily.sunrise[di]:null;
-        var ssISO=uv.daily.sunset?uv.daily.sunset[di]:null;
-        var dlMin=srISO&&ssISO?Math.round((new Date(ssISO)-new Date(srISO))/60000):null;
-        var dlH=dlMin!=null?Math.floor(dlMin/60):null;
-        var dlM=dlMin!=null?dlMin%60:null;
-        return{date:date,sunrise_iso:srISO,sunset_iso:ssISO,day_length_min:dlMin,day_length_formatted:dlH!=null?dlH+"h "+pad2(dlM)+"m":null,precip_in:uv.daily.precipitation_sum?uv.daily.precipitation_sum[di]:null,snowfall_in:uv.daily.snowfall_sum?uv.daily.snowfall_sum[di]:null,wind_max_mph:uv.daily.wind_speed_10m_max?uv.daily.wind_speed_10m_max[di]:null};
+      var dtimes=uv.daily.time||[];
+      omD=dtimes.map(function(date,di){
+        var sr=uv.daily.sunrise?uv.daily.sunrise[di]:null,ss=uv.daily.sunset?uv.daily.sunset[di]:null;
+        var dlMin=sr&&ss?Math.round((new Date(ss)-new Date(sr))/60000):null;
+        var pIn=uv.daily.precipitation_sum?uv.daily.precipitation_sum[di]:null;
+        var isFuture=(date>=now.toISOString().slice(0,10));
+        var warn=(pIn!=null&&pIn>2.0&&isFuture)?"HIGH_OM_PRECIP: raw GFS/ICON; verify against nws_gridpoint_qpf; known 2-7x convective bias in stalled-front scenarios":null;
+        return{date:date,sunrise_iso:sr,sunset_iso:ss,day_length_min:dlMin,day_length_formatted:dlMin!=null?(Math.floor(dlMin/60)+"h "+pad2(dlMin%60)+"m"):null,precip_in:pIn,precip_model_warning:warn,snowfall_in:uv.daily.snowfall_sum?uv.daily.snowfall_sum[di]:null,wind_max_mph:uv.daily.wind_speed_10m_max?uv.daily.wind_speed_10m_max[di]:null,wind_dir_dominant:uv.daily.wind_direction_10m_dominant?uv.daily.wind_direction_10m_dominant[di]:null,uv_index_max:uv.daily.uv_index_max?uv.daily.uv_index_max[di]:null,apparent_temp_max_f:uv.daily.apparent_temperature_max?uv.daily.apparent_temperature_max[di]:null,apparent_temp_min_f:uv.daily.apparent_temperature_min?uv.daily.apparent_temperature_min[di]:null,precip_prob_max:uv.daily.precipitation_probability_max?uv.daily.precipitation_probability_max[di]:null,shortwave_mj_m2:uv.daily.shortwave_radiation_sum?uv.daily.shortwave_radiation_sum[di]:null};
       });
       var todayStr=now.toISOString().slice(0,10);
-      var todayEntry=null;
-      for(var ti=0;ti<omDaily.length;ti++){if(omDaily[ti].date===todayStr){todayEntry=omDaily[ti];break}}
-      if(todayEntry){astronomy={date:todayEntry.date,sunrise_iso:todayEntry.sunrise_iso,sunset_iso:todayEntry.sunset_iso,day_length_min:todayEntry.day_length_min,day_length_formatted:todayEntry.day_length_formatted,source:"Open-Meteo forecast (computed from coordinates)"};}
+      for(var ti=0;ti<omD.length;ti++){if(omD[ti].date===todayStr){astro={date:omD[ti].date,sunrise_iso:omD[ti].sunrise_iso,sunset_iso:omD[ti].sunset_iso,day_length_min:omD[ti].day_length_min,day_length_formatted:omD[ti].day_length_formatted,uv_index_max:omD[ti].uv_index_max};break;}}
+    }
+    // Bug 1 fix: de-duplicate ECMWF precipitation
+    var ecExport=null;
+    if(node.ecmwf){
+      ecExport=JSON.parse(JSON.stringify(node.ecmwf));
+      if(ecExport.hourly&&ecExport.hourly.precipitation){
+        ecExport.hourly.precipitation=ecExport.hourly.precipitation.map(function(v,i){return i%3===0?v:0;});
+        ecExport._precip_note="de-duped from 3hr native (Bug 1): non-stride slots zeroed; safe to sum directly";
+      }
     }
     return{
       id:node.id,role:node.role,label:node.label,latitude:node.lat,longitude:node.lon,
       nws_office:nws?nws.office:null,station:nws?nws.stationId:null,
-      current_observations:currentObs,current_uv_index:currentUV,
-      nws_hourly_forecast:nwsHourly,nws_7day_forecast:forecast7day,
-      open_meteo_hourly:omHourly,open_meteo_daily:omDaily,astronomy:astronomy,
+      current_observations:curObs,current_uv_index:curUV,
+      nws_hourly_forecast:nwsHourly,nws_7day_forecast:fc7,
+      nws_gridpoint_qpf:node.gridpoint||null,
+      open_meteo_hourly:omH,open_meteo_daily:omD,astronomy:astro,
       climate_normals:node.climate||null,alerts:alerts,
-      afd:afdText?{office:nws.office,issued:nws.afdTime,mode:STATE.afdMode,text:afdText}:null,
-      // Extra NWS products (null when not fetched)
-      wpc_ero:     node.ero     || null,
-      wpc_mpd:     node.mpd     || null,
-      lsr:         node.lsr     || null,
-      asos_precip: node.asosPrecip || null,
-      // Open-Meteo extended models (null when not fetched)
-      ecmwf_ifs:   node.ecmwf   || null,
-      ensemble:    node.ensemble || null,
-      source_freshness:{
-        observations:obs?obs.timestamp:null,
-        hourly_forecast:nws?nws.hourlyUpdated:null,
-        seven_day_forecast:nws?nws.forecastUpdated:null,
-        afd:nws?nws.afdTime:null,
-        open_meteo:now.toISOString(),
-        climate_normals:node.climate?"Open-Meteo ERA5 2015–2024 (10-year computed average, 7-day window normals)":null,
-        wpc_ero:    node.ero    ? node.ero.issued : null,
-        wpc_mpd:    node.mpd && node.mpd.length ? node.mpd[0].issued : null,
-        lsr:        node.lsr    ? node.lsr.issued : null,
-        asos_precip:node.asosPrecip ? now.toISOString() : null,
-        ecmwf_ifs:  node.ecmwf  ? now.toISOString() : null,
-        ensemble:   node.ensemble ? now.toISOString() : null
-      }
+      afd:afdTxt?{office:nws.office,issued:nws.afdTime,mode:STATE.afdMode,text:afdTxt}:null,
+      air_quality:node.aq||null,
+      wpc_ero:node.ero||null,wpc_mpd:node.mpd||null,
+      lsr:node.lsr||null,asos_precip:node.asosPrecip||null,
+      hwo:node.hwo||null,ecmwf_ifs:ecExport,ensemble:node.ensemble||null,
+      source_freshness:{observations:obs?obs.timestamp:null,hourly_forecast:nws?nws.hourlyUpdated:null,seven_day_forecast:nws?nws.forecastUpdated:null,afd:nws?nws.afdTime:null,nws_gridpoint_qpf:node.gridpoint?now.toISOString():null,open_meteo:now.toISOString(),climate_normals:node.climate?"ERA5 2015-2024 (10yr avg, 7-day window)":null,air_quality:node.aq?now.toISOString():null,wpc_ero:node.ero?node.ero.issued:null,wpc_mpd:node.mpd&&node.mpd.length?node.mpd[0].issued:null,hwo:node.hwo?node.hwo.issued:null,ecmwf_ifs:node.ecmwf?now.toISOString():null,ensemble:node.ensemble?now.toISOString():null}
     };
   });
-  return{_format:"weather-station-export-v2",_generated:now.toISOString(),_note:"Paste this entire block into your Claude weather briefing project. Includes ERA5 2015-2024 climate normals (all 12 months) and astronomical data.",_node_count:nodes.length,nodes:nodes};
+  var payload={_format:"weather-station-export-v2",_version:VERSION,_generated:now.toISOString(),_node_count:nodes.length,_note:"NWS gridpoint QPF is authoritative for US precipitation. OM daily precip_in from GFS/ICON — check precip_model_warning. ECMWF precipitation de-duped (Bug 1).",nodes:nodes};
+  if(STATE.extraProducts.spc&&STATE.spcData)payload.spc_outlook=STATE.spcData;
+  return payload;
 }
 
-function getExportText(){
-  try{var p=buildExportPayload();return"<weather_data>\n"+JSON.stringify(p,null,2)+"\n</weather_data>"}
-  catch(e){return"ERROR: "+e.message+"\n\n"+e.stack}
-}
-function copyForClaude(){
-  var text=getExportText();
-  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(flash).catch(function(){fallbackCopy(text)})}
-  else{fallbackCopy(text)}
-}
-function fallbackCopy(text){var ta=document.createElement("textarea");ta.value=text;ta.style.position="fixed";ta.style.left="-9999px";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");flash()}catch(e){}document.body.removeChild(ta)}
-function flash(){var el=document.getElementById("copy-status");el.classList.add("show");setTimeout(function(){el.classList.remove("show")},2500)}
-function showPreview(){document.getElementById("export-modal-content").textContent=getExportText();document.getElementById("export-modal").classList.add("open")}
-function closePreview(){document.getElementById("export-modal").classList.remove("open")}
+function getExportText(){try{return"<weather_data>\n"+JSON.stringify(buildExportPayload(),null,2)+"\n</weather_data>";}catch(e){return"ERROR: "+e.message;}}
+function copyForClaude(){var t=getExportText();if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(flash).catch(function(){fallbackCopy(t);});}else{fallbackCopy(t);}}
+function fallbackCopy(t){var ta=document.createElement("textarea");ta.value=t;ta.style.cssText="position:fixed;left:-9999px";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");flash();}catch(e){}document.body.removeChild(ta);}
+function flash(){var el=document.getElementById("copy-status");el.classList.add("show");setTimeout(function(){el.classList.remove("show");},2500);}
+function showPreview(){document.getElementById("export-modal-content").textContent=getExportText();document.getElementById("export-modal").classList.add("open");}
+function closePreview(){document.getElementById("export-modal").classList.remove("open");}
 
-// ─── Render ─────────────────────────────────────────────
+// ── Render Node List & Tabs ────────────────────────────────────────────────────
 function renderNodeList(){
   document.getElementById("node-list").innerHTML=STATE.nodes.map(function(n){
     var st=n.status==="loading"?'<span class="spinner"></span>':n.status==="ready"?'<span style="color:var(--success)">✓</span>':n.status==="error"?'<span style="color:var(--danger)">✗</span>':'—';
-    var climSt=n.climate?'<span style="color:var(--purple);font-size:10px;margin-left:4px" title="Climate normals loaded">≋</span>':n.status==="loading"?'<span style="color:var(--dim);font-size:10px;margin-left:4px" title="Loading climate normals...">≋</span>':'';
-    var toSt=n.timeouts&&n.timeouts.length?'<span style="color:#f97316;font-size:10px;margin-left:4px" title="Timed out: '+n.timeouts.join(', ')+'">⏱</span>':'';
-    return'<div class="node-item"><span class="role-badge '+ROLE_CLASSES[n.role]+'">'+ROLE_LABELS[n.role]+'</span><span class="node-label">'+esc(n.label)+'</span><span class="node-coords">'+n.lat.toFixed(4)+', '+n.lon.toFixed(4)+'</span><span class="node-status">'+st+climSt+toSt+'</span>'+(STATE.nodes.length>1?'<button class="btn btn-danger btn-sm" onclick="removeNode(\''+n.id+'\')">✗</button>':'')+'</div>'
-  }).join("")
+    var qpfBadge=n.gridpoint?'<span style="color:var(--success);font-size:10px;margin-left:4px" title="NWS QPF loaded">QPF</span>':n.status==="loading"?'<span style="color:var(--dim);font-size:10px;margin-left:4px">QPF</span>':'';
+    var clBadge=n.climate?'<span style="color:var(--purple);font-size:10px;margin-left:4px">ERA5</span>':'';
+    var toStr=n.timeouts&&n.timeouts.length?'<span style="color:var(--orange);font-size:10px;margin-left:4px" title="Timed: '+n.timeouts.join(',')+'" >⏱</span>':'';
+    return'<div class="node-item"><span class="role-badge '+ROLE_CLASSES[n.role]+'">'+ROLE_LABELS[n.role]+'</span><span class="node-label">'+esc(n.label)+'</span><span class="node-coords">'+n.lat.toFixed(4)+', '+n.lon.toFixed(4)+'</span><span class="node-status">'+st+qpfBadge+clBadge+toStr+'</span>'+(STATE.nodes.length>1?'<button class="btn btn-danger btn-sm" onclick="removeNode(\''+n.id+'\')">✗</button>':'')+'</div>';
+  }).join("");
 }
 function renderTabs(){
-  document.getElementById("node-tabs").innerHTML=STATE.nodes.map(function(n){
-    return'<div class="node-tab '+(n.id===STATE.activeTab?"active":"")+'" onclick="switchTab(\''+n.id+'\')"><span>'+esc(n.label)+'</span><span class="tab-role '+ROLE_CLASSES[n.role]+'">'+ROLE_LABELS[n.role]+'</span></div>'
-  }).join("");
-  document.getElementById("header-sub").innerHTML=STATE.nodes.length+" node"+(STATE.nodes.length!==1?"s":"")+" · "+STATE.nodes.map(function(n){return n.label}).join(" → ")+" · <span style='opacity:.5'>v"+VERSION+"</span>";
+  document.getElementById("node-tabs").innerHTML=STATE.nodes.map(function(n){return'<div class="node-tab '+(n.id===STATE.activeTab?"active":"")+'" onclick="switchTab(\''+n.id+'\')"><span>'+esc(n.label)+'</span><span class="tab-role">'+ROLE_LABELS[n.role]+'</span></div>';}).join("");
+  document.getElementById("header-sub").innerHTML=STATE.nodes.length+" node"+(STATE.nodes.length!==1?"s":"")+" · "+STATE.nodes.map(function(n){return n.label;}).join(" → ")+" · <span style='opacity:.5'>v"+VERSION+"</span>";
 }
-function switchTab(id){STATE.activeTab=id;renderTabs();renderActivePanel()}
+function switchTab(id){STATE.activeTab=id;renderTabs();renderActivePanel();}
 
+// ── Pill helper ────────────────────────────────────────────────────────────────
+function pill(l,val,u,s){return'<div class="pill"><div class="label">'+l+'</div><div class="value">'+val+'<span class="unit">'+u+'</span></div>'+(s?'<div class="sub">'+s+'</div>':'')+'</div>';}
+
+// ── Source row helpers ─────────────────────────────────────────────────────────
+function srcRow(ok,to,l,info){var c=ok?"dot-ok":to?"dot-timeout":"dot-fail";return'<div class="source-row"><span class="dot '+c+'"></span><span class="source-label">'+l+'</span><span>'+info+'</span></div>';}
+function srcRowOpt(data,enabled,l,info){var c=data?"dot-ok":enabled?"dot-fail":"dot-off";return'<div class="source-row"><span class="dot '+c+'"></span><span class="source-label">'+l+'</span><span style="color:'+(enabled?"inherit":"var(--dim)")+'">'+info+'</span></div>';}
+
+// ── Main Render ────────────────────────────────────────────────────────────────
 function renderActivePanel(){
   var panel=document.getElementById("node-panels");
-  var node=null;for(var i=0;i<STATE.nodes.length;i++){if(STATE.nodes[i].id===STATE.activeTab){node=STATE.nodes[i];break}}
-  if(!node){panel.innerHTML="";return}
-  var nws=node.nws,uv=node.uv,errors=node.errors;
-  var html="";
+  var node=null;for(var i=0;i<STATE.nodes.length;i++){if(STATE.nodes[i].id===STATE.activeTab){node=STATE.nodes[i];break;}}
+  if(!node){panel.innerHTML="";return;}
+  var nws=node.nws,uv=node.uv,html="";
 
-  if(errors.length)html+='<div class="errors">'+errors.map(function(e){return'<div>✗ '+esc(e)+'</div>'}).join("")+'</div>';
+  if(node.errors.length)html+='<div class="errors">'+node.errors.map(function(e){return'<div>✗ '+esc(e)+'</div>';}).join("")+'</div>';
 
-  if(nws&&nws.alerts&&nws.alerts.length)html+=nws.alerts.map(function(a){var p=a.properties;var sev=(p.severity==="Extreme"||p.severity==="Severe")?"severe":"moderate";return'<div class="alert-box '+sev+'"><div class="alert-title" style="color:var(--'+(sev==="severe"?"danger":"warn")+')">⚠ '+esc(p.event)+'</div><div class="alert-headline">'+esc(p.headline||"")+'</div><div class="alert-time">'+ts(p.onset)+' → '+ts(p.expires)+'</div></div>'}).join("");
+  // Active alerts
+  if(nws&&nws.alerts&&nws.alerts.length)html+=nws.alerts.map(function(a){var p=a.properties,sev=(p.severity==="Extreme"||p.severity==="Severe")?"severe":"moderate";return'<div class="alert-box '+sev+'"><div class="alert-title" style="color:var(--'+(sev==="severe"?"danger":"warn")+'">⚠ '+esc(p.event)+'</div><div class="alert-headline">'+esc(p.headline||"")+'</div><div class="alert-time">'+ts(p.onset)+' → '+ts(p.expires)+'</div></div>';}).join("");
 
+  // Current conditions
   if(nws&&nws.observation){
-    var obs=nws.observation,temp=cToF(obs.temperature?obs.temperature.value:null),dew=cToF(obs.dewpoint?obs.dewpoint.value:null),wind=mpsToMph(obs.windSpeed?obs.windSpeed.value:null),gust=mpsToMph(obs.windGust?obs.windGust.value:null),wdir=compass(obs.windDirection?obs.windDirection.value:null),vis=mToMi(obs.visibility?obs.visibility.value:null),pres=paToInHg(obs.barometricPressure?obs.barometricPressure.value:null),hum=obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,sky=obs.textDescription||"",oTime=obs.timestamp,fl=nws.hourly&&nws.hourly[0]?nws.hourly[0].temperature:null;
-    var curUV=null;if(uv&&uv.hourly){var nowH=new Date().toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){curUV=uv.hourly.uv_index[ui];break}}}
-    html+='<div class="section-header"><h2>Current Conditions</h2><span class="badge badge-fresh">'+ago(oTime)+'</span><span class="meta">'+ts(oTime)+'</span></div>';
-    html+='<div class="pills">'+pill("Temp",vv(temp),"°F",sky)+pill("Feels like",vv(fl),"°F","")+pill("Dew Pt",vv(dew),"°F","")+pill("Humidity",vv(hum),"%","")+pill("Wind",vv(wind)," mph",wdir+(gust?" · G"+gust:""))+pill("Vis",vv(vis)," mi","")+pill("Pressure",vv(pres)," inHg","")+pill("UV",curUV!=null?Math.round(curUV*10)/10:"—","",curUV==null?"—":curUV<3?"Low":curUV<6?"Mod":"High")+'</div>';
-
+    var obs=nws.observation;
+    var t=cF(obs.temperature?obs.temperature.value:null),dew=cF(obs.dewpoint?obs.dewpoint.value:null);
+    var ws=mphv(obs.windSpeed?obs.windSpeed.value:null),wg=mphv(obs.windGust?obs.windGust.value:null),wd=compass(obs.windDirection?obs.windDirection.value:null);
+    var vis=mMi(obs.visibility?obs.visibility.value:null),pres=inHg(obs.barometricPressure?obs.barometricPressure.value:null);
+    var hum=obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null;
+    var fl=nws.hourly&&nws.hourly[0]?nws.hourly[0].temperature:null;
+    var curUV=null;if(uv&&uv.hourly){var nowH=new Date().toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){curUV=uv.hourly.uv_index[ui];break;}}}
+    html+='<div class="section-header"><h2>Current Conditions</h2><span class="badge badge-fresh">'+ago(obs.timestamp)+'</span><span class="meta">'+ts(obs.timestamp)+'</span></div>';
+    html+='<div class="pills">'+pill("Temp",vv(t),"°F",obs.textDescription||"")+pill("Feels like",vv(fl),"°F","")+pill("Dew Pt",vv(dew),"°F","")+pill("Humidity",vv(hum),"%","")+pill("Wind",vv(ws)," mph",wd+(wg?" · G"+wg:""))+pill("Vis",vv(vis)," mi","")+pill("Pressure",vv(pres)," inHg","")+pill("UV",curUV!=null?Math.round(curUV*10)/10:"—","",curUV==null?"—":curUV<3?"Low":curUV<6?"Mod":"High")+'</div>';
+    // Astronomy bar
     if(uv&&uv.daily){
-      var todayStr=new Date().toISOString().slice(0,10);
-      var dailyTimes=uv.daily.time||[];
-      var dIdx=-1;for(var di=0;di<dailyTimes.length;di++){if(dailyTimes[di]===todayStr){dIdx=di;break}}
+      var todayStr=new Date().toISOString().slice(0,10),dIdx=-1;
+      for(var di=0;di<(uv.daily.time||[]).length;di++){if(uv.daily.time[di]===todayStr){dIdx=di;break;}}
       if(dIdx>=0){
-        var srISO=uv.daily.sunrise?uv.daily.sunrise[dIdx]:null;
-        var ssISO=uv.daily.sunset?uv.daily.sunset[dIdx]:null;
-        if(srISO||ssISO){
-          var dlMin=srISO&&ssISO?Math.round((new Date(ssISO)-new Date(srISO))/60000):null;
-          var dlFmt=dlMin!=null?Math.floor(dlMin/60)+"h "+pad2(dlMin%60)+"m":null;
+        var sr=uv.daily.sunrise?uv.daily.sunrise[dIdx]:null,ss=uv.daily.sunset?uv.daily.sunset[dIdx]:null;
+        var dlMin=sr&&ss?Math.round((new Date(ss)-new Date(sr))/60000):null;
+        var uvMx=uv.daily.uv_index_max?uv.daily.uv_index_max[dIdx]:null;
+        var apMax=uv.daily.apparent_temperature_max?uv.daily.apparent_temperature_max[dIdx]:null;
+        if(sr||ss){
           html+='<div class="astro-bar">';
-          html+='<div class="astro-item">☀️ <span class="astro-val">'+fmtTimeShort(srISO)+'</span> rise</div>';
-          html+='<div class="astro-item">🌙 <span class="astro-val">'+fmtTimeShort(ssISO)+'</span> set</div>';
-          if(dlFmt)html+='<div class="astro-item"><span class="astro-val">'+dlFmt+'</span> daylight</div>';
-          html+='<span style="opacity:.4;font-size:10px;margin-left:auto">Open-Meteo</span>';
-          html+='</div>';
+          html+='<div class="astro-item">☀️ <span class="astro-val">'+fmtShortTime(sr)+'</span> rise</div>';
+          html+='<div class="astro-item">🌙 <span class="astro-val">'+fmtShortTime(ss)+'</span> set</div>';
+          if(dlMin!=null)html+='<div class="astro-item"><span class="astro-val">'+Math.floor(dlMin/60)+'h '+pad2(dlMin%60)+'m</span> daylight</div>';
+          if(uvMx!=null)html+='<div class="astro-item">UV max <span class="astro-val" style="color:'+(uvMx<3?"var(--success)":uvMx<6?"var(--warn)":"var(--danger)")+'">'+Math.round(uvMx*10)/10+'</span></div>';
+          if(apMax!=null)html+='<div class="astro-item">Feels max <span class="astro-val">'+Math.round(apMax)+'°</span></div>';
+          html+='<span style="opacity:.4;font-size:10px;margin-left:auto">Open-Meteo</span></div>';
         }
       }
     }
   }
 
+  // Air Quality
+  if(node.aq&&node.aq.current){
+    var cur=node.aq.current,aqi=cur.us_aqi;
+    var aqC=aqi<=50?"var(--success)":aqi<=100?"var(--warn)":aqi<=150?"var(--orange)":"var(--danger)";
+    var aqL=aqi<=50?"Good":aqi<=100?"Moderate":aqi<=150?"Unhealthy/Sensitive":aqi<=200?"Unhealthy":"Very Unhealthy";
+    html+='<div style="margin-top:12px"><div class="section-header"><h2>Air Quality</h2><span class="badge" style="background:'+aqC+'22;color:'+aqC+'">AQI '+aqi+' · '+aqL+'</span></div><div class="pills">';
+    html+=pill("US AQI",aqi,"",aqL);
+    if(cur.pm2_5!=null)html+=pill("PM2.5",Math.round(cur.pm2_5*10)/10," μg/m³","");
+    if(cur.pm10!=null)html+=pill("PM10",Math.round(cur.pm10)," μg/m³","");
+    if(cur.ozone!=null)html+=pill("O₃",Math.round(cur.ozone)," μg/m³","");
+    if(cur.dust!=null&&cur.dust>0)html+=pill("Dust",Math.round(cur.dust)," μg/m³","");
+    html+='</div></div>';
+  }
+
+  // SPC Outlook
+  if(STATE.extraProducts.spc&&STATE.spcData){
+    var SPC_C={HIGH:"var(--danger)",MDT:"var(--orange)",ENH:"var(--warn)",SLGT:"#facc15",MRGL:"var(--success)",TSTM:"var(--dim)"};
+    ["day1","day2"].forEach(function(key){
+      var d=STATE.spcData[key];if(!d)return;
+      var sid="spc-"+key+"-"+node.id,col=SPC_C[d.max_risk]||"var(--dim)";
+      html+='<div style="margin-top:12px"><button class="afd-toggle" onclick="document.getElementById(\''+sid+'\').classList.toggle(\'open\')">';
+      html+='<h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ SPC '+(key==="day1"?"Day 1":"Day 2")+' Outlook</h2>';
+      html+='<span class="badge" style="background:'+col+'22;color:'+col+';margin-left:8px">'+d.max_risk+'</span>';
+      html+='<span class="badge badge-fresh" style="margin-left:4px">'+ago(d.issued)+'</span>';
+      html+='</button><pre class="afd-text" id="'+sid+'">'+esc(d.text)+'</pre></div>';
+    });
+  }
+
+  // Charts
   if(nws&&nws.hourly&&nws.hourly.length>2){
-    var count=Math.min(nws.hourly.length,STATE.hourlyWindow);
-    var temps=[],precips=[],winds=[];
-    for(var ci=0;ci<count;ci++){
-      temps.push(nws.hourly[ci].temperature);
-      precips.push(nws.hourly[ci].probabilityOfPrecipitation?nws.hourly[ci].probabilityOfPrecipitation.value:0);
-      var ws=nws.hourly[ci].windSpeed;winds.push(parseInt(ws)||0);
-    }
-    html+='<div class="chart-row">';
-    html+='<div class="chart-box"><h3>Temperature Trend ('+count+'h)</h3>'+sparkSvg(temps,{color:"var(--danger)",fill:true,unit:"°"})+'</div>';
-    html+='<div class="chart-box"><h3>Precip Probability ('+count+'h)</h3>'+sparkSvg(precips,{color:"var(--accent)",fill:true,unit:"%"})+'</div>';
-    html+='<div class="chart-box"><h3>Wind Speed ('+count+'h)</h3>'+sparkSvg(winds,{color:"var(--warn)",fill:false,unit:"mph"})+'</div>';
-    html+='</div>';
-
-    // Extended OM variable charts — only shown when toggle is on and data exists
+    var cnt=Math.min(nws.hourly.length,STATE.hourlyWindow);
+    var temps=[],prec=[],wnds=[];
+    for(var ci=0;ci<cnt;ci++){temps.push(nws.hourly[ci].temperature);prec.push((nws.hourly[ci].probabilityOfPrecipitation&&nws.hourly[ci].probabilityOfPrecipitation.value)||0);var ws2=nws.hourly[ci].windSpeed;wnds.push(parseInt(ws2)||0);}
+    html+='<div class="chart-row"><div class="chart-box"><h3>Temperature ('+cnt+'h)</h3>'+spark(temps,{color:"var(--danger)",fill:true,unit:"°"})+'</div><div class="chart-box"><h3>Precip Probability ('+cnt+'h)</h3>'+spark(prec,{color:"var(--accent)",fill:true,unit:"%"})+'</div><div class="chart-box"><h3>Wind ('+cnt+'h)</h3>'+spark(wnds,{color:"var(--warn)",fill:false,unit:"mph"})+'</div></div>';
     if(uv&&uv.hourly){
-      var omCount=Math.min((uv.hourly.time||[]).length,STATE.hourlyWindow);
-      var extraCharts=[];
-      if(STATE.omVars.qpf&&uv.hourly.precipitation){
-        var qpfVals=uv.hourly.precipitation.slice(0,omCount);
-        var hasQpf=qpfVals.some(function(v){return v>0;});
-        extraCharts.push('<div class="chart-box"><h3>Actual QPF — hourly precip (in)</h3>'+(hasQpf?sparkSvg(qpfVals,{color:"var(--accent)",fill:true,unit:'"'}):'<div style="font-size:11px;color:var(--dim);font-family:var(--mono);padding:8px">No precip in window</div>')+'</div>');
-      }
-      if(STATE.omVars.convective&&uv.hourly.cape){
-        var capeVals=uv.hourly.cape.slice(0,omCount);
-        extraCharts.push('<div class="chart-box"><h3>CAPE (J/kg) · &gt;1000 notable · &gt;2500 significant</h3>'+sparkSvg(capeVals,{color:"var(--orange)",fill:true,unit:" J/kg"})+'</div>');
-      }
-      if(STATE.omVars.bld&&uv.hourly.boundary_layer_height){
-        var bldVals=uv.hourly.boundary_layer_height.slice(0,omCount).map(function(v){return v!=null?Math.round(v*3.281):null;});
-        extraCharts.push('<div class="chart-box"><h3>Boundary Layer Height (ft)</h3>'+sparkSvg(bldVals,{color:"var(--purple)",fill:false,unit:" ft"})+'</div>');
-      }
-      if(STATE.omVars.freezing&&uv.hourly.freezing_level_height){
-        var frzVals=uv.hourly.freezing_level_height.slice(0,omCount).map(function(v){return v!=null?Math.round(v*3.281):null;});
-        extraCharts.push('<div class="chart-box"><h3>Freezing Level (ft MSL)</h3>'+sparkSvg(frzVals,{color:"var(--accent)",fill:false,unit:" ft"})+'</div>');
-      }
-      if(extraCharts.length){html+='<div class="chart-row">'+extraCharts.join("")+'</div>';}
+      var omCnt=Math.min((uv.hourly.time||[]).length,STATE.hourlyWindow),extras=[];
+      if(STATE.omVars.convective&&uv.hourly.cape){extras.push('<div class="chart-box"><h3>CAPE J/kg · &gt;1000 notable</h3>'+spark(uv.hourly.cape.slice(0,omCnt),{color:"var(--orange)",fill:true,unit:" J/kg"})+'</div>');}
+      if(STATE.omVars.bld&&uv.hourly.boundary_layer_height){extras.push('<div class="chart-box"><h3>Boundary Layer Height (ft)</h3>'+spark(uv.hourly.boundary_layer_height.slice(0,omCnt).map(function(v){return v!=null?Math.round(v*3.281):null;}),{color:"var(--purple)",fill:false,unit:" ft"})+'</div>');}
+      if(STATE.omVars.freezing&&uv.hourly.freezing_level_height){extras.push('<div class="chart-box"><h3>Freezing Level (ft MSL)</h3>'+spark(uv.hourly.freezing_level_height.slice(0,omCnt).map(function(v){return v!=null?Math.round(v*3.281):null;}),{color:"var(--accent)",fill:false,unit:" ft"})+'</div>');}
+      if(extras.length)html+='<div class="chart-row">'+extras.join("")+'</div>';
     }
   }
 
+  // Hourly cards
   if(nws&&nws.hourly&&nws.hourly.length){
-    var count2=Math.min(nws.hourly.length,STATE.hourlyWindow);
-    html+='<div style="margin-top:16px"><div class="section-header"><h2>Hourly</h2><span class="badge badge-fresh">'+ago(nws.hourlyUpdated)+'</span><span class="meta">'+count2+' hrs</span></div><div class="hourly-scroll"><div class="hourly-row">';
-    for(var hi=0;hi<count2;hi++){
-      var h=nws.hourly[hi],t=new Date(h.startTime),isNow=hi===0,dayB=t.getHours()===0&&hi>0,precip=h.probabilityOfPrecipitation?h.probabilityOfPrecipitation.value:0;
-      var hourUV2=null,hourQPF=null,hourCAPE=null;
-      if(uv&&uv.hourly){
-        var hk2=h.startTime.slice(0,13);
-        for(var uj=0;uj<(uv.hourly.time||[]).length;uj++){
-          if(uv.hourly.time[uj].indexOf(hk2)===0){
-            hourUV2=uv.hourly.uv_index[uj];
-            if(STATE.omVars.qpf&&uv.hourly.precipitation) hourQPF=uv.hourly.precipitation[uj];
-            if(STATE.omVars.convective&&uv.hourly.cape)    hourCAPE=uv.hourly.cape[uj];
-            break;
-          }
-        }
-      }
-      html+='<div class="hour-card'+(isNow?" now":"")+(dayB?" day-boundary":"")+'"><div class="time">'+(isNow?"NOW":t.toLocaleString("en-US",{hour:"numeric",hour12:true}))+'</div>';
-      if(dayB)html+='<div class="day-label">'+t.toLocaleString("en-US",{weekday:"short"}).toUpperCase()+'</div>';
-      html+='<div class="temp">'+h.temperature+'°</div><div class="desc">'+esc(h.shortForecast)+'</div><div class="wind">'+h.windSpeed+'</div><div class="wind-dir">'+h.windDirection+'</div>';
-      if(precip>0)html+='<div class="precip">💧'+precip+'%</div>';
-      if(hourQPF!=null&&hourQPF>0)html+='<div class="precip" style="color:var(--success)">≈'+hourQPF.toFixed(2)+'"</div>';
-      if(hourUV2!=null&&hourUV2>0)html+='<div class="'+(hourUV2<3?"uv-low":hourUV2<6?"uv-mod":"uv-high")+'">UV '+Math.round(hourUV2*10)/10+'</div>';
-      if(hourCAPE!=null&&hourCAPE>=500)html+='<div style="font-size:10px;font-family:var(--mono);color:var(--orange);margin-top:2px">⚡'+Math.round(hourCAPE)+'</div>';
+    var cnt2=Math.min(nws.hourly.length,STATE.hourlyWindow);
+    html+='<div style="margin-top:16px"><div class="section-header"><h2>Hourly</h2><span class="badge badge-fresh">'+ago(nws.hourlyUpdated)+'</span><span class="meta">'+cnt2+' hrs</span></div><div class="hourly-scroll"><div class="hourly-row">';
+    for(var hi=0;hi<cnt2;hi++){
+      var h=nws.hourly[hi],ht=new Date(h.startTime),isNow=hi===0,dayB=ht.getHours()===0&&hi>0;
+      var pp=(h.probabilityOfPrecipitation&&h.probabilityOfPrecipitation.value)||0;
+      var huv=null,hqpf=null,hcape=null;
+      if(uv&&uv.hourly){var hk=h.startTime.slice(0,13);for(var uj=0;uj<(uv.hourly.time||[]).length;uj++){if(uv.hourly.time[uj].indexOf(hk)===0){huv=uv.hourly.uv_index[uj];if(STATE.omVars.qpf&&uv.hourly.precipitation)hqpf=uv.hourly.precipitation[uj];if(STATE.omVars.convective&&uv.hourly.cape)hcape=uv.hourly.cape[uj];break;}}}
+      html+='<div class="hour-card'+(isNow?" now":"")+(dayB?" day-boundary":"")+'"><div class="htime">'+(isNow?"NOW":ht.toLocaleString("en-US",{hour:"numeric",hour12:true}))+'</div>';
+      if(dayB)html+='<div class="day-label">'+ht.toLocaleString("en-US",{weekday:"short"}).toUpperCase()+'</div>';
+      html+='<div class="htemp">'+h.temperature+'°</div><div class="hdesc">'+esc(h.shortForecast)+'</div><div class="hwind">'+h.windSpeed+'</div>';
+      if(pp>0)html+='<div class="hprecip">💧'+pp+'%</div>';
+      if(hqpf!=null&&hqpf>0)html+='<div class="hprecip" style="color:var(--success)">≈'+hqpf.toFixed(2)+'"</div>';
+      if(huv!=null&&huv>0)html+='<div style="font-size:10px;font-family:var(--mono);color:'+(huv<3?"var(--success)":huv<6?"var(--warn)":"var(--danger)")+';margin-top:2px">UV '+Math.round(huv*10)/10+'</div>';
+      if(hcape!=null&&hcape>=500)html+='<div style="font-size:10px;font-family:var(--mono);color:var(--orange);margin-top:2px">⚡'+Math.round(hcape)+'</div>';
       html+='</div>';
     }
     html+='</div></div></div>';
   }
 
+  // 7-Day forecast
   if(nws&&nws.forecast&&nws.forecast.length){
-    var dayLabels=[],dayHighs=[],dayLows=[];
-    for(var fi=0;fi<nws.forecast.length;fi+=2){
-      var dayP=nws.forecast[fi];var nightP=nws.forecast[fi+1];
-      dayLabels.push(dayP.name);
-      if(dayP.isDaytime){dayHighs.push(dayP.temperature);dayLows.push(nightP?nightP.temperature:null)}
-      else{dayHighs.push(null);dayLows.push(dayP.temperature)}
-    }
+    var dlabels=[],dhighs=[],dlows=[];
+    for(var fi=0;fi<nws.forecast.length;fi+=2){var dp=nws.forecast[fi],np=nws.forecast[fi+1];dlabels.push(dp.name);if(dp.isDaytime){dhighs.push(dp.temperature);dlows.push(np?np.temperature:null);}else{dhighs.push(null);dlows.push(dp.temperature);}}
     html+='<div style="margin-top:16px"><div class="section-header"><h2>7-Day</h2><span class="badge badge-fresh">'+ago(nws.forecastUpdated)+'</span></div>';
-      if(dayHighs.filter(function(v){return v!=null}).length>1){
-        html+='<div class="chart-container"><h3>High / Low Range';
-        if(node.climate){
-          var normLabel=null;
-          if(node.climate.today_window){
-            normLabel='Normal (±3 day window): High '+node.climate.today_window.normal_high_f+'° / Low '+node.climate.today_window.normal_low_f+'°';
-          } else if(node.climate.months){
-            var nowMIdx=new Date().getMonth()+1;
-            var cnArr=node.climate.months[nowMIdx-1];
-            if(cnArr&&cnArr.normal_high_f!=null){
-              normLabel='Normal: High '+cnArr.normal_high_f+'° / Low '+cnArr.normal_low_f+'° ('+cnArr.month_abbr+')';
-            }
-          }
-          if(normLabel) html+=' <span style="color:var(--dim);font-weight:400"> · '+normLabel+'</span>';
-        }
-        html+='</h3>'+barChart(dayLabels,dayHighs,dayLows)+'</div>';
-      }
-    html+='<div class="forecast-rows" style="margin-top:8px">';
+    if(dhighs.filter(function(v){return v!=null;}).length>1){
+      html+='<div style="background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px"><div style="font-size:11px;font-family:var(--mono);color:var(--dim);text-transform:uppercase;margin-bottom:6px">High / Low Range';
+      if(node.climate){var cn=node.climate.today_window;var cnm=node.climate.months&&node.climate.months[new Date().getMonth()];var nStr=cn?(" · Normal "+cn.normal_high_f+"°/"+cn.normal_low_f+"°F"):cnm?(" · Normal "+cnm.normal_high_f+"°/"+cnm.normal_low_f+"°F"):"";if(nStr)html+=nStr;}
+      html+='</div>'+barChart(dlabels,dhighs,dlows)+'</div>';
+    }
+    html+='<div class="forecast-rows">';
     for(var fj=0;fj<nws.forecast.length;fj++){
-      var fp=nws.forecast[fj],prec=fp.probabilityOfPrecipitation?fp.probabilityOfPrecipitation.value:0;
-      var deltaStr="";
+      var fp=nws.forecast[fj],pp2=(fp.probabilityOfPrecipitation&&fp.probabilityOfPrecipitation.value)||0;
+      var dStr="";
       if(node.climate){
-        var useWindow = node.climate.today_window && fj < 8;
-        var normRef = null;
-        if(useWindow){
-          normRef = fp.isDaytime!==false
-            ? node.climate.today_window.normal_high_f
-            : node.climate.today_window.normal_low_f;
-        } else if(node.climate.months){
-          var nowM=new Date().getMonth()+1;
-          var normMonth=node.climate.months[nowM-1];
-          if(normMonth){
-            normRef=fp.isDaytime!==false?normMonth.normal_high_f:normMonth.normal_low_f;
-          }
-        }
-        if(normRef!=null&&fp.temperature!=null){
-          var delta=Math.round(fp.temperature-normRef);
-          var dColor=delta>0?"var(--danger)":delta<0?"var(--accent)":"var(--dim)";
-          var wLabel=useWindow?' title="7-day window normal"':'';
-          deltaStr='<span style="font-size:11px;color:'+dColor+';font-family:var(--mono);flex-shrink:0;width:44px;text-align:right"'+wLabel+'>'+(delta>0?"+":"")+delta+'°Δ</span>';
-        }
+        var normRef=null;
+        if(node.climate.today_window&&fj<8)normRef=fp.isDaytime!==false?node.climate.today_window.normal_high_f:node.climate.today_window.normal_low_f;
+        else if(node.climate.months){var cm=node.climate.months[new Date().getMonth()];if(cm)normRef=fp.isDaytime!==false?cm.normal_high_f:cm.normal_low_f;}
+        if(normRef!=null&&fp.temperature!=null){var delta=Math.round(fp.temperature-normRef);dStr='<span style="font-size:11px;color:'+(delta>0?"var(--danger)":delta<0?"var(--accent)":"var(--dim)")+';font-family:var(--mono);flex-shrink:0;width:44px;text-align:right">'+(delta>0?"+":"")+delta+'°Δ</span>';}
       }
-      html+='<div class="forecast-row"><div class="name">'+esc(fp.name)+'</div><div class="temp">'+fp.temperature+'°<span class="unit">'+fp.temperatureUnit+'</span></div><div class="fwind">'+fp.windSpeed+' '+fp.windDirection+'</div>'+deltaStr+(prec>0?'<span class="badge badge-precip">💧'+prec+'%</span>':'')+'<div class="short">'+esc(fp.shortForecast)+'</div></div>';
+      html+='<div class="forecast-row"><div class="fname">'+esc(fp.name)+'</div><div class="ftemp">'+fp.temperature+'°<span class="unit">'+fp.temperatureUnit+'</span></div><div class="fwind">'+fp.windSpeed+' '+fp.windDirection+'</div>'+dStr+(pp2>0?'<span class="badge badge-precip">💧'+pp2+'%</span>':'')+'<div class="fshort">'+esc(fp.shortForecast)+'</div></div>';
     }
     html+='</div></div>';
   }
 
-  // ── AFD ─────────────────────────────────────────────────
+  // NWS Gridpoint QPF
+  if(node.gridpoint&&node.gridpoint.qpf_periods&&node.gridpoint.qpf_periods.length){
+    var gp=node.gridpoint,qbd={},tbd={},sbd={};
+    gp.qpf_periods.forEach(function(p){var d=p.start.slice(0,10);qbd[d]=(qbd[d]||0)+(p.precip_in||0);});
+    (gp.thunder_prob||[]).forEach(function(p){var d=p.start.slice(0,10);tbd[d]=Math.max(tbd[d]||0,p.prob_pct||0);});
+    (gp.snowfall_periods||[]).forEach(function(p){var d=p.start.slice(0,10);sbd[d]=(sbd[d]||0)+(p.snow_in||0);});
+    var hasT=Object.keys(tbd).length>0,hasS=gp.snowfall_periods&&gp.snowfall_periods.length>0,hasI=gp.ice_periods&&gp.ice_periods.length>0;
+    html+='<div style="margin-top:16px"><div class="section-header"><h2>NWS Gridpoint QPF</h2><span class="badge" style="background:#4ade8022;color:var(--success)">Authoritative</span><span class="meta">'+esc(gp.source)+'</span></div>';
+    html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px"><table class="climate-table"><thead><tr><th style="text-align:left">Date (UTC)</th><th>QPF</th>';
+    if(hasT)html+='<th>Max ⚡%</th>';if(hasS)html+='<th>Snow</th>';if(hasI)html+='<th>Ice</th>';
+    html+='</tr></thead><tbody>';
+    var today2=new Date().toISOString().slice(0,10);
+    Object.keys(qbd).sort().slice(0,8).forEach(function(day){
+      var tot=Math.round(qbd[day]*1000)/1000,isT=(day===today2);
+      html+='<tr'+(isT?' class="cur"':'')+'><td style="text-align:left'+(isT?';font-weight:700':'')+'">'+day.slice(5)+(isT?' <span style="color:var(--dim);font-size:10px">(today)</span>':'')+'</td>';
+      html+='<td style="color:'+(tot>1.5?"var(--danger)":tot>0.5?"var(--accent)":tot>0?"inherit":"var(--dim)")+';font-weight:'+(tot>1.5?"700":"400")+'">'+(tot>0?tot.toFixed(3)+'"':"—")+'</td>';
+      if(hasT){var tp=tbd[day]||0;html+='<td style="color:'+(tp>=40?"var(--danger)":tp>=20?"var(--warn)":"var(--dim)")+'">'+(tp>0?tp+"%":"—")+'</td>';}
+      if(hasS){var sn=sbd[day]||0;html+='<td>'+(sn>0?sn.toFixed(2)+'"':"—")+'</td>';}
+      if(hasI)html+='<td>—</td>';
+      html+='</tr>';
+    });
+    html+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">NWS Gridpoint QPF · authoritative · same source as NWS hourly chart · UTC day boundaries</div></div></div>';
+  } else if(node.nws&&node.status==="ready"&&!node.gridpoint){
+    html+='<div style="margin-top:8px;font-size:11px;color:var(--dim);font-family:var(--mono)">NWS QPF: unavailable or still loading</div>';
+  }
+
+  // AFD
   if(nws&&nws.afd){
     var afdId="afd-"+node.id;
-    html+='<div style="margin-top:16px"><button class="afd-toggle" onclick="var el=document.getElementById(\''+afdId+'\');el.classList.toggle(\'open\');this.querySelector(\'h2\').textContent=(el.classList.contains(\'open\')?\'▾\':\'▸\')+\' AFD — '+esc(nws.office)+'\'"><h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ AFD — '+esc(nws.office)+'</h2><span class="badge badge-fresh">'+ago(nws.afdTime)+'</span></button><pre class="afd-text" id="'+afdId+'">'+esc(nws.afd)+'</pre></div>';
+    html+='<div style="margin-top:16px"><button class="afd-toggle" onclick="document.getElementById(\''+afdId+'\').classList.toggle(\'open\')"><h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ AFD — '+esc(nws.office)+'</h2><span class="badge badge-fresh" style="margin-left:6px">'+ago(nws.afdTime)+'</span></button><pre class="afd-text" id="'+afdId+'">'+esc(nws.afd)+'</pre></div>';
   }
 
-  // ── WPC ERO ─────────────────────────────────────────────
+  // HWO
+  if(node.hwo){
+    var hwoId="hwo-"+node.id;
+    html+='<div style="margin-top:12px"><button class="afd-toggle" onclick="document.getElementById(\''+hwoId+'\').classList.toggle(\'open\')"><h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ HWO — '+esc(node.hwo.office)+'</h2><span class="badge badge-fresh" style="margin-left:6px">'+ago(node.hwo.issued)+'</span></button><pre class="afd-text" id="'+hwoId+'">'+esc(node.hwo.text)+'</pre></div>';
+  }
+
+  // WPC ERO
   if(node.ero){
     var eroId="ero-"+node.id;
-    var RISK_COLORS={HIGH:"var(--danger)",ENHANCED:"var(--orange)",SLIGHT:"var(--warn)",MARGINAL:"var(--success)"};
-    var riskBadges=node.ero.risks.map(function(r){
-      var c=RISK_COLORS[r]||"var(--dim)";
-      return'<span class="badge" style="background:'+c+'22;color:'+c+'">'+(r.charAt(0)+r.slice(1).toLowerCase())+'</span>';
-    }).join(" ");
-    html+='<div style="margin-top:16px">';
-    html+='<button class="afd-toggle" onclick="var el=document.getElementById(\''+eroId+'\');el.classList.toggle(\'open\');this.querySelector(\'h2\').textContent=(el.classList.contains(\'open\')?\'▾\':\'▸\')+\' WPC ERO\'">';
-    html+='<h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ WPC ERO</h2>';
-    html+='<span class="badge badge-fresh" style="margin-left:4px">'+ago(node.ero.issued)+'</span>';
-    if(riskBadges)html+='<span style="margin-left:8px">'+riskBadges+'</span>';
-    else html+='<span class="badge" style="background:var(--success)22;color:var(--success);margin-left:8px">No risk areas</span>';
-    html+='</button>';
-    html+='<pre class="afd-text" id="'+eroId+'">'+esc(node.ero.text)+'</pre></div>';
-  } else if(STATE.extraProducts.ero && node.status==="ready"){
-    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)">WPC ERO: unavailable</div>';
+    var EROC={HIGH:"var(--danger)",ENHANCED:"var(--orange)",SLIGHT:"var(--warn)",MARGINAL:"var(--success)"};
+    var eroB=node.ero.risks.map(function(r){var c=EROC[r]||"var(--dim)";return'<span class="badge" style="background:'+c+'22;color:'+c+'">'+r.charAt(0)+r.slice(1).toLowerCase()+'</span>';}).join(" ");
+    html+='<div style="margin-top:12px"><button class="afd-toggle" onclick="document.getElementById(\''+eroId+'\').classList.toggle(\'open\')"><h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ WPC ERO</h2><span class="badge badge-fresh" style="margin-left:6px">'+ago(node.ero.issued)+'</span>'+(eroB?' <span style="margin-left:4px">'+eroB+'</span>':'<span class="badge badge-fresh" style="margin-left:4px">No risk areas</span>')+'</button><pre class="afd-text" id="'+eroId+'">'+esc(node.ero.text)+'</pre></div>';
   }
 
-  // ── WPC MPD ─────────────────────────────────────────────
+  // WPC MPD
   if(node.mpd){
-    html+='<div style="margin-top:16px">';
-    html+='<div class="section-header"><h2>WPC MPD</h2>';
-    if(node.mpd.length){
-      html+='<span class="badge" style="background:var(--orange)22;color:var(--orange)">'+node.mpd.length+' discussion'+(node.mpd.length>1?"s":"")+'</span>';
-    } else {
-      html+='<span class="badge badge-fresh">No active discussions</span>';
-    }
+    html+='<div style="margin-top:12px"><div class="section-header"><h2>WPC MPD</h2>'+(node.mpd.length?'<span class="badge" style="background:var(--orange)22;color:var(--orange)">'+node.mpd.length+' active</span>':'<span class="badge badge-fresh">No active discussions</span>')+'</div>';
+    node.mpd.forEach(function(m,mi){var mid="mpd-"+node.id+"-"+mi;html+='<button class="afd-toggle" onclick="document.getElementById(\''+mid+'\').classList.toggle(\'open\')"><span style="font-size:13px;font-family:var(--mono);font-weight:600;color:var(--dim)">▸ MPD #'+(mi+1)+'</span><span class="badge badge-fresh" style="margin-left:8px">'+ago(m.issued)+'</span></button><pre class="afd-text" id="'+mid+'">'+esc(m.text)+'</pre>';});
     html+='</div>';
-    node.mpd.forEach(function(m,mi){
-      var mpdId="mpd-"+node.id+"-"+mi;
-      html+='<button class="afd-toggle" onclick="var el=document.getElementById(\''+mpdId+'\');el.classList.toggle(\'open\');this.querySelector(\'.mpd-label\').textContent=(el.classList.contains(\'open\')?\'▾ \':\'▸ \')+\'MPD #'+(mi+1)+'\'">';
-      html+='<span class="mpd-label" style="font-size:13px;font-family:var(--mono);font-weight:600;color:var(--dim)">▸ MPD #'+(mi+1)+'</span>';
-      html+='<span class="badge badge-fresh" style="margin-left:8px">'+ago(m.issued)+'</span>';
-      html+='</button>';
-      html+='<pre class="afd-text" id="'+mpdId+'">'+esc(m.text)+'</pre>';
-    });
-    html+='</div>';
-  } else if(STATE.extraProducts.mpd && node.status==="ready"){
-    html+='<div style="margin-top:12px;font-size:12px;color:var(--success);font-family:var(--mono)">✓ WPC MPD: no active discussions</div>';
   }
 
-  // ── LSR ─────────────────────────────────────────────────
+  // LSR
   if(node.lsr){
     var lsrId="lsr-"+node.id;
-    html+='<div style="margin-top:16px">';
-    html+='<button class="afd-toggle" onclick="var el=document.getElementById(\''+lsrId+'\');el.classList.toggle(\'open\');this.querySelector(\'h2\').textContent=(el.classList.contains(\'open\')?\'▾\':\'▸\')+\' LSR — '+esc(node.lsr.office)+'\'">';
-    html+='<h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ LSR — '+esc(node.lsr.office)+'</h2>';
-    html+='<span class="badge badge-fresh" style="margin-left:4px">'+ago(node.lsr.issued)+'</span>';
-    html+='</button>';
-    html+='<pre class="afd-text" id="'+lsrId+'">'+esc(node.lsr.text)+'</pre></div>';
-  } else if(STATE.extraProducts.lsr && node.status==="ready"){
-    var lsrUnavailReason = (!node.nws || !node.nws.office) ? "NWS data required" : "unavailable";
-    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)">LSR: '+lsrUnavailReason+'</div>';
+    html+='<div style="margin-top:12px"><button class="afd-toggle" onclick="document.getElementById(\''+lsrId+'\').classList.toggle(\'open\')"><h2 style="font-size:14px;font-weight:600;margin:0;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)">▸ LSR — '+esc(node.lsr.office)+'</h2><span class="badge badge-fresh" style="margin-left:6px">'+ago(node.lsr.issued)+'</span></button><pre class="afd-text" id="'+lsrId+'">'+esc(node.lsr.text)+'</pre></div>';
   }
 
-  // ── ASOS Hourly Precip ──────────────────────────────────
+  // ASOS Precip
   if(node.asosPrecip){
-    var precObs=node.asosPrecip.observations;
-    html+='<div style="margin-top:16px">';
-    html+='<div class="section-header"><h2>ASOS Precip</h2>';
-    html+='<span class="badge badge-fresh">'+precObs.length+' obs w/ precip data</span>';
-    html+='<span class="meta">'+esc(node.asosPrecip.station)+'</span>';
+    var aobs=node.asosPrecip.observations;
+    html+='<div style="margin-top:12px"><div class="section-header"><h2>ASOS Precip</h2><span class="badge badge-fresh">'+aobs.length+' obs</span><span class="meta">'+esc(node.asosPrecip.station)+'</span></div>';
+    if(aobs.length){html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px"><table class="climate-table"><thead><tr><th style="text-align:left">Time</th><th>1hr</th><th>3hr</th><th>6hr</th><th style="text-align:left">Sky</th></tr></thead><tbody>';aobs.forEach(function(o){var hot=(o.precip_1hr_in>0||o.precip_3hr_in>0||o.precip_6hr_in>0);html+='<tr'+(hot?' style="background:rgba(96,165,250,.06)"':'')+'><td style="text-align:left">'+ts(o.timestamp)+'</td><td style="color:'+(o.precip_1hr_in>0?"var(--accent)":"inherit")+'">'+(o.precip_1hr_in!=null?(o.precip_1hr_in>0?o.precip_1hr_in+'"':"trace"):"—")+'</td><td>'+(o.precip_3hr_in!=null?o.precip_3hr_in+'"':"—")+'</td><td>'+(o.precip_6hr_in!=null?o.precip_6hr_in+'"':"—")+'</td><td style="text-align:left;color:var(--dim)">'+esc(o.sky||"")+'</td></tr>';});html+='</tbody></table></div>';}
+    else html+='<div style="font-size:12px;color:var(--dim);font-family:var(--mono)">No precip in last 24 obs.</div>';
     html+='</div>';
-    if(precObs.length){
-      html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px">';
-      html+='<table class="climate-table"><thead><tr>';
-      html+='<th style="text-align:left">Time</th><th>1hr</th><th>3hr</th><th>6hr</th><th style="text-align:left">Sky</th>';
-      html+='</tr></thead><tbody>';
-      precObs.forEach(function(o){
-        var hasNonZero=(o.precip_1hr_in>0||o.precip_3hr_in>0||o.precip_6hr_in>0);
-        var rowStyle=hasNonZero?' style="background:rgba(96,165,250,.06)"':'';
-        html+='<tr'+rowStyle+'>';
-        html+='<td style="text-align:left">'+ts(o.timestamp)+'</td>';
-        html+='<td style="color:'+(o.precip_1hr_in>0?"var(--accent)":"inherit")+'">'+
-          (o.precip_1hr_in!=null?(o.precip_1hr_in>0?o.precip_1hr_in+'"':'trace'):'—')+'</td>';
-        html+='<td>'+(o.precip_3hr_in!=null?o.precip_3hr_in+'"':'—')+'</td>';
-        html+='<td>'+(o.precip_6hr_in!=null?o.precip_6hr_in+'"':'—')+'</td>';
-        html+='<td style="text-align:left;color:var(--dim)">'+esc(o.sky||'')+'</td>';
-        html+='</tr>';
-      });
-      html+='</tbody></table>';
-      html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">Precip values converted from mm. Rows with measured accumulation highlighted.</div>';
-      html+='</div>';
-    } else {
-      html+='<div style="font-size:12px;color:var(--dim);font-family:var(--mono);padding:8px 0">No precipitation recorded in last 24 observations.</div>';
-    }
-    html+='</div>';
-  } else if(STATE.extraProducts.asosPrecip && node.status==="ready"){
-    var asosUnavailReason = (!node.nws || !node.nws.stationId) ? "NWS data required" : "unavailable";
-    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)">ASOS Precip: '+asosUnavailReason+'</div>';
   }
 
-  // ── ECMWF IFS ───────────────────────────────────────────
+  // ECMWF IFS
   if(node.ecmwf&&node.ecmwf.hourly){
-    var ec=node.ecmwf.hourly;
-    var ecTimes=ec.time||[];
-    var ecTemps=[],ecPrecip=[],ecLabels=[];
-    // Build 10-day daily summary from hourly: max temp, total precip per day
-    var ecDays={};
-    for(var ei=0;ei<ecTimes.length;ei++){
-      var ecDay=ecTimes[ei].slice(0,10);
-      if(!ecDays[ecDay])ecDays[ecDay]={temps:[],precip:0,maxCape:0};
-      if(ec.temperature_2m&&ec.temperature_2m[ei]!=null)ecDays[ecDay].temps.push(ec.temperature_2m[ei]);
-      if(ec.precipitation&&ec.precipitation[ei]!=null)ecDays[ecDay].precip+=ec.precipitation[ei];
-      if(ec.cape&&ec.cape[ei]!=null&&ec.cape[ei]>ecDays[ecDay].maxCape)ecDays[ecDay].maxCape=ec.cape[ei];
+    var ec=node.ecmwf.hourly,ect=ec.time||[],ecd={};
+    for(var ei=0;ei<ect.length;ei++){
+      var eday=ect[ei].slice(0,10);if(!ecd[eday])ecd[eday]={temps:[],precip:0,maxCape:0};
+      if(ec.temperature_2m&&ec.temperature_2m[ei]!=null)ecd[eday].temps.push(ec.temperature_2m[ei]);
+      // Bug 1 fix: stride-3 accumulation
+      if(ec.precipitation&&ec.precipitation[ei]!=null&&ei%3===0)ecd[eday].precip+=ec.precipitation[ei];
+      if(ec.cape&&ec.cape[ei]!=null&&ec.cape[ei]>ecd[eday].maxCape)ecd[eday].maxCape=ec.cape[ei];
     }
-    var ecDayKeys=Object.keys(ecDays).sort();
-    html+='<div style="margin-top:16px">';
-    html+='<div class="section-header"><h2>ECMWF IFS</h2><span class="badge" style="background:var(--purple)22;color:var(--purple)">9km · 10-day</span><span class="meta">Independent model cross-check</span></div>';
-    html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px">';
-    html+='<table class="climate-table"><thead><tr><th style="text-align:left">Date</th><th>High</th><th>Low</th><th>Precip</th>'+(ec.cape?'<th>Max CAPE</th>':'')+'</tr></thead><tbody>';
-    ecDayKeys.slice(0,10).forEach(function(dk){
-      var dd=ecDays[dk];
-      var hi=dd.temps.length?Math.round(Math.max.apply(null,dd.temps)):"—";
-      var lo=dd.temps.length?Math.round(Math.min.apply(null,dd.temps)):"—";
-      var prStr=dd.precip>0.005?dd.precip.toFixed(2)+'"':'—';
-      var isToday=(dk===new Date().toISOString().slice(0,10));
-      var capeCell=ec.cape?'<td style="color:'+(dd.maxCape>=1000?"var(--orange)":dd.maxCape>=250?"var(--warn)":"inherit")+'">'+(dd.maxCape>=100?Math.round(dd.maxCape):'—')+'</td>':'';
-      html+='<tr'+(isToday?' class="current-month"':'')+'>';
-      html+='<td style="text-align:left'+(isToday?';font-weight:700':'')+'">'+dk.slice(5)+(isToday?' <span style="color:var(--dim);font-size:10px">(today)</span>':'')+'</td>';
-      html+='<td style="color:var(--danger)">'+hi+'°</td>';
-      html+='<td style="color:var(--accent)">'+lo+'°</td>';
-      html+='<td style="color:'+(dd.precip>0.01?"var(--accent)":"inherit")+'">'+prStr+'</td>';
-      html+=capeCell;
-      html+='</tr>';
+    html+='<div style="margin-top:16px"><div class="section-header"><h2>ECMWF IFS</h2><span class="badge" style="background:var(--purple)22;color:var(--purple)">9km · 10-day</span><span class="meta">precip Bug 1 fixed</span></div>';
+    html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px"><table class="climate-table"><thead><tr><th style="text-align:left">Date</th><th>High</th><th>Low</th><th>Precip (corrected)</th>'+(ec.cape?'<th>Max CAPE</th>':'')+'</tr></thead><tbody>';
+    Object.keys(ecd).sort().slice(0,10).forEach(function(dk){
+      var dd=ecd[dk],hi=dd.temps.length?Math.round(Math.max.apply(null,dd.temps)):"—",lo=dd.temps.length?Math.round(Math.min.apply(null,dd.temps)):"—";
+      var isT=(dk===new Date().toISOString().slice(0,10));
+      html+='<tr'+(isT?' class="cur"':'')+'><td style="text-align:left'+(isT?';font-weight:700':'')+'">'+dk.slice(5)+(isT?' <span style="color:var(--dim);font-size:10px">(today)</span>':'')+'</td><td style="color:var(--danger)">'+hi+'°</td><td style="color:var(--accent)">'+lo+'°</td><td style="color:'+(dd.precip>0.01?"var(--accent)":"inherit")+'">'+(dd.precip>0.005?dd.precip.toFixed(3)+'"':"—")+'</td>'+(ec.cape?'<td style="color:'+(dd.maxCape>=1000?"var(--orange)":dd.maxCape>=250?"var(--warn)":"inherit")+'">'+(dd.maxCape>=100?Math.round(dd.maxCape):"—")+'</td>':'')+'</tr>';
     });
-    html+='</tbody></table>';
-    html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">ECMWF IFS · Open-Meteo · 9km native resolution · Updated every 6h · Compare against NWS 7-day for confidence</div>';
-    html+='</div></div>';
-  } else if(STATE.omModels.ecmwf && node.status==="ready"){
-    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)">ECMWF: unavailable</div>';
+    html+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">ECMWF IFS · Open-Meteo · 9km · precip de-duped (stride-3 fix for Bug 1)</div></div></div>';
   }
 
-  // ── Ensemble Spread ─────────────────────────────────────
+  // Ensemble Spread
   if(node.ensemble&&node.ensemble.time){
-    var ens=node.ensemble;
-    var ensTimes=ens.time||[];
-    // Build daily spread summary
-    var ensDays={};
-    for(var eni=0;eni<ensTimes.length;eni++){
-      var ensDay=ensTimes[eni].slice(0,10);
-      if(!ensDays[ensDay])ensDays[ensDay]={tP10:[],tMed:[],tP90:[],pr10:[],prMed:[],prP90:[]};
-      if(ens.temperature_2m){
-        if(ens.temperature_2m.p10[eni]!=null)ensDays[ensDay].tP10.push(ens.temperature_2m.p10[eni]);
-        if(ens.temperature_2m.median[eni]!=null)ensDays[ensDay].tMed.push(ens.temperature_2m.median[eni]);
-        if(ens.temperature_2m.p90[eni]!=null)ensDays[ensDay].tP90.push(ens.temperature_2m.p90[eni]);
-      }
-      if(ens.precipitation){
-        if(ens.precipitation.p10[eni]!=null)ensDays[ensDay].pr10.push(ens.precipitation.p10[eni]);
-        if(ens.precipitation.median[eni]!=null)ensDays[ensDay].prMed.push(ens.precipitation.median[eni]);
-        if(ens.precipitation.p90[eni]!=null)ensDays[ensDay].prP90.push(ens.precipitation.p90[eni]);
-      }
-    }
-    function ensAvg(arr){if(!arr.length)return null;return arr.reduce(function(a,b){return a+b;},0)/arr.length;}
-    function ensMax(arr){if(!arr.length)return null;return Math.max.apply(null,arr);}
-    var ensDayKeys=Object.keys(ensDays).sort();
-    html+='<div style="margin-top:16px">';
-    html+='<div class="section-header"><h2>Ensemble Spread</h2><span class="badge" style="background:var(--accent)22;color:var(--accent)">'+ens.model+'</span><span class="meta">'+ens.member_count+' members · p10/median/p90</span></div>';
-    html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px">';
-    html+='<table class="climate-table"><thead><tr>';
-    html+='<th style="text-align:left">Date</th>';
-    html+='<th>Temp p10</th><th>Temp med</th><th>Temp p90</th><th>Spread</th>';
-    html+='<th>Precip med</th><th>Precip p90</th>';
-    html+='</tr></thead><tbody>';
-    ensDayKeys.forEach(function(dk){
-      var dd=ensDays[dk];
-      var tLo=ensAvg(dd.tP10),tMed=ensAvg(dd.tMed),tHi=ensAvg(dd.tP90);
-      var prMed=ensMax(dd.prMed),prHi=ensMax(dd.prP90);
-      var spread=tLo!=null&&tHi!=null?Math.round(tHi-tLo):null;
-      var isToday=(dk===new Date().toISOString().slice(0,10));
-      var spreadColor=spread!=null?(spread>15?"var(--danger)":spread>8?"var(--warn)":"var(--success)"):"inherit";
-      html+='<tr'+(isToday?' class="current-month"':'')+'>';
-      html+='<td style="text-align:left'+(isToday?';font-weight:700':'')+'">'+dk.slice(5)+(isToday?' <span style="color:var(--dim);font-size:10px">(today)</span>':'')+'</td>';
-      html+='<td style="color:var(--accent)">'+(tLo!=null?Math.round(tLo)+'°':'—')+'</td>';
-      html+='<td style="font-weight:600">'+(tMed!=null?Math.round(tMed)+'°':'—')+'</td>';
-      html+='<td style="color:var(--danger)">'+(tHi!=null?Math.round(tHi)+'°':'—')+'</td>';
-      html+='<td style="color:'+spreadColor+';font-weight:600">'+(spread!=null?'±'+Math.round(spread/2)+'°':'—')+'</td>';
-      html+='<td>'+(prMed!=null&&prMed>0.005?prMed.toFixed(2)+'"':'—')+'</td>';
-      html+='<td style="color:'+(prHi>0.25?"var(--accent)":"inherit")+'">'+(prHi!=null&&prHi>0.005?prHi.toFixed(2)+'"':'—')+'</td>';
-      html+='</tr>';
+    var ens=node.ensemble,enst=ens.time||[],ensd={};
+    for(var ei2=0;ei2<enst.length;ei2++){var eday2=enst[ei2].slice(0,10);if(!ensd[eday2])ensd[eday2]={tp10:[],tmed:[],tp90:[],prmed:[],prp90:[]};if(ens.temperature_2m){if(ens.temperature_2m.p10[ei2]!=null)ensd[eday2].tp10.push(ens.temperature_2m.p10[ei2]);if(ens.temperature_2m.median[ei2]!=null)ensd[eday2].tmed.push(ens.temperature_2m.median[ei2]);if(ens.temperature_2m.p90[ei2]!=null)ensd[eday2].tp90.push(ens.temperature_2m.p90[ei2]);}if(ens.precipitation){if(ens.precipitation.median[ei2]!=null)ensd[eday2].prmed.push(ens.precipitation.median[ei2]);if(ens.precipitation.p90[ei2]!=null)ensd[eday2].prp90.push(ens.precipitation.p90[ei2]);}}
+    function ea(arr){if(!arr.length)return null;return arr.reduce(function(a,b){return a+b;},0)/arr.length;}
+    function em(arr){if(!arr.length)return null;return Math.max.apply(null,arr);}
+    html+='<div style="margin-top:16px"><div class="section-header"><h2>Ensemble Spread</h2><span class="badge" style="background:var(--accent)22;color:var(--accent)">'+ens.model+'</span><span class="meta">'+ens.member_count+' members · p10/median/p90</span></div>';
+    html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px"><table class="climate-table"><thead><tr><th style="text-align:left">Date</th><th>T p10</th><th>T med</th><th>T p90</th><th>±°</th><th>Pr med</th><th>Pr p90</th></tr></thead><tbody>';
+    Object.keys(ensd).sort().forEach(function(dk){
+      var dd=ensd[dk],tlo=ea(dd.tp10),tmed=ea(dd.tmed),thi=ea(dd.tp90),prm=em(dd.prmed),prh=em(dd.prp90);
+      var sp=tlo!=null&&thi!=null?Math.round((thi-tlo)/2):null,isT=(dk===new Date().toISOString().slice(0,10));
+      html+='<tr'+(isT?' class="cur"':'')+'><td style="text-align:left'+(isT?';font-weight:700':'')+'">'+dk.slice(5)+(isT?' <span style="color:var(--dim);font-size:10px">(today)</span>':'')+'</td><td style="color:var(--accent)">'+(tlo!=null?Math.round(tlo)+'°':"—")+'</td><td style="font-weight:600">'+(tmed!=null?Math.round(tmed)+'°':"—")+'</td><td style="color:var(--danger)">'+(thi!=null?Math.round(thi)+'°':"—")+'</td><td style="color:'+(sp!=null?(sp>8?"var(--danger)":sp>5?"var(--warn)":"var(--success)"):"inherit")+'">'+(sp!=null?"±"+sp+'°':"—")+'</td><td>'+(prm!=null&&prm>0.005?prm.toFixed(2)+'"':"—")+'</td><td style="color:'+(prh!=null&&prh>0.25?"var(--accent)":"inherit")+'">'+(prh!=null&&prh>0.005?prh.toFixed(2)+'"':"—")+'</td></tr>';
     });
-    html+='</tbody></table>';
-    html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">Spread ±°: half the p10–p90 range. Green &lt;5° · Yellow &lt;8° · Red ≥15° indicates low forecast confidence. Precip p90 = worst-case member in that day.</div>';
-    html+='</div></div>';
-  } else if(STATE.omModels.ensemble && node.status==="ready"){
-    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)">Ensemble: unavailable</div>';
+    html+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">±° = half p10–p90 range. Green &lt;5° · Yellow &lt;8° · Red ≥8° = low confidence.</div></div></div>';
   }
 
-  // ── Climate Normals ─────────────────────────────────────
+  // Climate Normals
   if(node.climate&&node.climate.months){
-    var cl=node.climate;
-    var nowMonth=new Date().getMonth()+1;
-    html+='<div style="margin-top:16px">';
-    html+='<div class="section-header">';
-    html+='<h2>Climate Normals</h2>';
-    html+='<span class="badge" style="background:#a78bfa22;color:var(--purple)">'+esc(cl.period)+'</span>';
-    html+='<span class="meta" style="margin-left:4px">'+esc(cl.station_name||"")+'</span>';
-    html+='</div>';
-    html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px">';
-    html+='<table class="climate-table">';
-    html+='<thead><tr><th>Month</th><th>Avg High</th><th>Avg Low</th><th>Avg Precip</th><th>Avg Snow</th></tr></thead><tbody>';
-    cl.months.forEach(function(m){
-      var isCur=(m.month===nowMonth);
-      html+='<tr class="'+(isCur?"current-month":"dim-month")+'">';
-      html+='<td style="font-weight:'+(isCur?"700":"400")+'">';
-      if(isCur)html+='<span style="color:var(--accent)">→ </span>';
-      html+=esc(m.month_abbr);
-      if(isCur)html+=' <span style="color:var(--dim);font-size:10px;font-weight:400">(now)</span>';
-      html+='</td>';
-      html+='<td style="color:'+(isCur?"var(--danger)":"inherit")+'">'+(m.normal_high_f!=null?m.normal_high_f+"°F":"—")+'</td>';
-      html+='<td style="color:'+(isCur?"var(--accent)":"inherit")+'">'+(m.normal_low_f!=null?m.normal_low_f+"°F":"—")+'</td>';
-      html+='<td>'+(m.normal_precip_in!=null?m.normal_precip_in+'"':"—")+'</td>';
-      html+='<td>'+(m.normal_snow_in!=null&&m.normal_snow_in>=0.05?m.normal_snow_in+'"':"—")+'</td>';
-      html+='</tr>';
-    });
-    html+='</tbody></table>';
-    html+='<div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">'+esc(cl.source)+'</div>';
-    html+='</div></div>';
-  } else if(node.status==="loading"){
-    html+='<div style="margin-top:12px;font-size:12px;color:var(--dim);font-family:var(--mono)"><span class="spinner"></span> Loading climate normals…</div>';
+    var cl=node.climate,nowM=new Date().getMonth()+1;
+    html+='<div style="margin-top:16px"><div class="section-header"><h2>Climate Normals</h2><span class="badge" style="background:var(--purple)22;color:var(--purple)">'+esc(cl.period)+'</span><span class="meta">'+esc(cl.station_name||"")+'</span></div>';
+    html+='<div style="overflow-x:auto;background:var(--card);border:1px solid var(--border);border-radius:8px"><table class="climate-table"><thead><tr><th>Month</th><th>Avg High</th><th>Avg Low</th><th>Avg Precip</th></tr></thead><tbody>';
+    cl.months.forEach(function(m){var isCur=(m.month===nowM);html+='<tr class="'+(isCur?"cur":"dimr")+'"><td>'+(isCur?'<span style="color:var(--accent)">→ </span>':'')+esc(m.month_abbr)+(isCur?' <span style="color:var(--dim);font-size:10px">(now)</span>':'')+'</td><td style="color:'+(isCur?"var(--danger)":"inherit")+'">'+(m.normal_high_f!=null?m.normal_high_f+'°F':"—")+'</td><td style="color:'+(isCur?"var(--accent)":"inherit")+'">'+(m.normal_low_f!=null?m.normal_low_f+'°F':"—")+'</td><td>'+(m.normal_precip_in!=null?m.normal_precip_in+'"':"—")+'</td></tr>';});
+    html+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 12px 8px">'+esc(cl.source)+(cl.today_window?' · Today window: '+cl.today_window.normal_high_f+'°/'+cl.today_window.normal_low_f+'°F (±3d, n='+cl.today_window.sample_size+')':"")+'</div></div></div>';
   }
 
-  // ── Sources ─────────────────────────────────────────────
-  var sObs=nws&&nws.observation;var sTime=sObs?sObs.timestamp:null;
-  var sUV=null;if(uv&&uv.hourly){var nowH2=new Date().toISOString().slice(0,13);for(var si=0;si<(uv.hourly.time||[]).length;si++){if(uv.hourly.time[si].indexOf(nowH2)===0){sUV=uv.hourly.uv_index[si];break}}}
-  var hasAstro=uv&&uv.daily&&uv.daily.sunrise&&uv.daily.sunrise.length>0;
-  var obsTimedOut=nws&&nws.obsTimedOut;
-  var afdTimedOut=nws&&nws.afdTimedOut;
-
-  var eroLabel   = node.ero ? (node.ero.risks.length ? node.ero.risks.join(", ") : "No risk areas") + " · " + ts(node.ero.issued) : STATE.extraProducts.ero ? "unavailable" : "not fetched";
-  var mpdLabel   = node.mpd ? (node.mpd.length ? node.mpd.length+" discussion(s) · "+ago(node.mpd[0].issued) : "no active discussions") : STATE.extraProducts.mpd ? "unavailable" : "not fetched";
-  var lsrLabel   = node.lsr ? ts(node.lsr.issued)+" ("+ago(node.lsr.issued)+")" : STATE.extraProducts.lsr ? "unavailable" : "not fetched";
-  var asosLabel  = node.asosPrecip ? node.asosPrecip.observations.length+" obs · "+node.asosPrecip.station : STATE.extraProducts.asosPrecip ? "unavailable" : "not fetched";
-  var ecmwfLabel = node.ecmwf ? "ECMWF IFS · 9km · "+Object.keys((node.ecmwf.hourly||{}).time||{}).length+" hrs" : STATE.omModels.ecmwf ? "unavailable" : "not fetched";
-  var ensLabel   = node.ensemble ? node.ensemble.model+" · "+node.ensemble.member_count+" members" : STATE.omModels.ensemble ? "unavailable" : "not fetched";
-
-  // Build OM vars label for active free-rider additions
-  var omVarActive=[];
-  if(STATE.omVars.qpf)       omVarActive.push("QPF");
-  if(STATE.omVars.convective) omVarActive.push("CAPE/LI/CIN");
-  if(STATE.omVars.bld)        omVarActive.push("BLD");
-  if(STATE.omVars.freezing)   omVarActive.push("Freezing");
-
-  html+='<div class="sources"><h2>Sources — '+esc(node.label)+'</h2>'+
-    srcRow(!!sObs, obsTimedOut, "Observations", sObs?ts(sTime)+" ("+ago(sTime)+")":obsTimedOut?"timed out ("+TIMEOUT_NWS_OBS/1000+"s)":"unavailable", nws&&nws.stationId?" · "+nws.stationId:"")+
-    srcRow(nws&&nws.hourly&&nws.hourly.length>0, false, "Hourly Forecast", nws&&nws.hourlyUpdated?ts(nws.hourlyUpdated)+" ("+ago(nws.hourlyUpdated)+")":"unavailable")+
-    srcRow(nws&&nws.forecast&&nws.forecast.length>0, false, "7-Day Forecast", nws&&nws.forecastUpdated?ts(nws.forecastUpdated)+" ("+ago(nws.forecastUpdated)+")":"unavailable")+
-    srcRow(nws&&nws.alerts!=null, false, "Alerts", nws&&nws.alerts?nws.alerts.length+" active":"unavailable")+
-    srcRow(nws&&!!nws.afd, afdTimedOut, "AFD", nws&&nws.afdTime?ts(nws.afdTime)+" ("+ago(nws.afdTime)+")":afdTimedOut?"timed out ("+TIMEOUT_NWS_AFD/1000+"s)":"unavailable", nws&&nws.office?" · "+nws.office:"")+
-    srcRow(sUV!=null, false, "Open-Meteo forecast", (sUV!=null?"UV "+Math.round(sUV*10)/10:"unavailable")+(omVarActive.length?" · +"+omVarActive.join(", "):""))+
-    srcRow(hasAstro, false, "Astronomy (daily)", "Sunrise/sunset · 7-day · Open-Meteo")+
-    srcRow(!!node.climate, false, "Climate Normals", node.climate?"ERA5 "+node.climate.period+" · "+node.climate.station_name+(node.climate.today_window?" · window: "+node.climate.today_window.normal_high_f+"°/"+node.climate.today_window.normal_low_f+"°F":""):"unavailable")+
-    srcRowExtra(node.ero, STATE.extraProducts.ero, "WPC ERO", eroLabel)+
-    srcRowExtra(node.mpd, STATE.extraProducts.mpd, "WPC MPD", mpdLabel)+
-    srcRowExtra(node.lsr, STATE.extraProducts.lsr, "LSR — "+((nws&&nws.office)||"?"), lsrLabel)+
-    srcRowExtra(node.asosPrecip, STATE.extraProducts.asosPrecip, "ASOS Precip", asosLabel)+
-    srcRowExtra(node.ecmwf, STATE.omModels.ecmwf, "ECMWF IFS", ecmwfLabel)+
-    srcRowExtra(node.ensemble, STATE.omModels.ensemble, "Ensemble ("+((node.ensemble&&node.ensemble.model)||"ICON")+")", ensLabel)+
-    '<div class="footer">Live → api.weather.gov + api.open-meteo.com · ECMWF → api.open-meteo.com/v1/ecmwf · Ensemble → ensemble-api.open-meteo.com · Climate → archive-api.open-meteo.com (ERA5 2015–2024) · Timeouts: NWS '+TIMEOUT_NWS_POINTS/1000+'s, Open-Meteo '+TIMEOUT_OPEN_METEO/1000+'s, Climate '+TIMEOUT_CLIMATE/1000+'s, Extra '+TIMEOUT_EXTRA/1000+'s</div></div>';
+  // Sources
+  html+='<div class="sources"><h2>Sources — '+esc(node.label)+'</h2>';
+  html+=srcRow(nws&&!!nws.observation,nws&&nws.obsTimedOut,"Observations",nws&&nws.observation?ts(nws.observation.timestamp)+" ("+ago(nws.observation.timestamp)+")":nws&&nws.obsTimedOut?"timed out":"unavailable");
+  html+=srcRow(nws&&nws.hourly&&nws.hourly.length>0,false,"Hourly Forecast",nws&&nws.hourlyUpdated?ts(nws.hourlyUpdated)+" ("+ago(nws.hourlyUpdated)+")":"unavailable");
+  html+=srcRow(nws&&nws.forecast&&nws.forecast.length>0,false,"7-Day Forecast",nws&&nws.forecastUpdated?ts(nws.forecastUpdated)+" ("+ago(nws.forecastUpdated)+")":"unavailable");
+  html+=srcRow(nws&&!!nws.afd,nws&&nws.afdTimedOut,"AFD",nws&&nws.afd?ts(nws.afdTime)+" ("+ago(nws.afdTime)+")":nws&&nws.afdTimedOut?"timed out":"unavailable");
+  html+=srcRow(!!node.gridpoint,false,"NWS Gridpoint QPF",node.gridpoint?"Authoritative · "+node.gridpoint.qpf_periods.length+" periods · "+esc(node.gridpoint.source):(node.nws?"unavailable (fetching or error)":"NWS required"));
+  var omVarL=[];if(STATE.omVars.qpf)omVarL.push("QPF");if(STATE.omVars.convective)omVarL.push("CAPE");if(STATE.omVars.bld)omVarL.push("BLD");if(STATE.omVars.freezing)omVarL.push("Freezing");
+  html+=srcRow(!!uv,false,"Open-Meteo Forecast",(uv?"hourly+daily · +uv_index_max,apparent_temp_max/min,precip_prob_max,wind_dir,shortwave":"unavailable")+(omVarL.length?" · +"+omVarL.join(","):""));
+  html+=srcRow(!!node.climate,false,"ERA5 Climate Normals",node.climate?"2015-2024 · "+esc(node.climate.station_name||""):"unavailable");
+  html+=srcRowOpt(node.aq,STATE.extraProducts.aq,"Air Quality",node.aq&&node.aq.current?"AQI "+node.aq.current.us_aqi+" · 3-day hourly":STATE.extraProducts.aq?"unavailable":"not fetched");
+  html+=srcRowOpt(STATE.spcData&&STATE.spcData.day1,STATE.extraProducts.spc,"SPC Day 1/2",STATE.spcData&&STATE.spcData.day1?"Max risk: "+(STATE.spcData.day1.max_risk||"TSTM")+" · "+ago(STATE.spcData.day1.issued):STATE.extraProducts.spc?"unavailable":"not fetched");
+  html+=srcRowOpt(node.ero,STATE.extraProducts.ero,"WPC ERO",node.ero?(node.ero.risks.length?node.ero.risks.join(", "):"No risk areas"):STATE.extraProducts.ero?"unavailable":"not fetched");
+  html+=srcRowOpt(node.mpd,STATE.extraProducts.mpd,"WPC MPD",node.mpd?(node.mpd.length?node.mpd.length+" discussion(s)":"no active discussions"):STATE.extraProducts.mpd?"unavailable":"not fetched");
+  html+=srcRowOpt(node.hwo,STATE.extraProducts.hwo,"HWO",node.hwo?ts(node.hwo.issued)+" ("+ago(node.hwo.issued)+")":STATE.extraProducts.hwo?"unavailable":"not fetched");
+  html+=srcRowOpt(node.lsr,STATE.extraProducts.lsr,"LSR — "+((nws&&nws.office)||"?"),node.lsr?ts(node.lsr.issued):STATE.extraProducts.lsr?"unavailable":"not fetched");
+  html+=srcRowOpt(node.asosPrecip,STATE.extraProducts.asosPrecip,"ASOS Precip",node.asosPrecip?node.asosPrecip.observations.length+" obs · "+node.asosPrecip.station:STATE.extraProducts.asosPrecip?"unavailable":"not fetched");
+  html+=srcRowOpt(node.ecmwf,STATE.omModels.ecmwf,"ECMWF IFS",node.ecmwf?"9km · 10-day · precip de-duped":STATE.omModels.ecmwf?"unavailable":"not fetched");
+  html+=srcRowOpt(node.ensemble,STATE.omModels.ensemble,"Ensemble Spread",node.ensemble?node.ensemble.member_count+" members (ICON EPS)":STATE.omModels.ensemble?"unavailable":"not fetched");
+  html+='<div class="sfooter">NWS api.weather.gov · Gridpoint /gridpoints/{cwa}/{x},{y} · OM api.open-meteo.com · AQ air-quality-api.open-meteo.com · ECMWF api.open-meteo.com/v1/ecmwf · Ensemble ensemble-api.open-meteo.com · Climate archive-api.open-meteo.com (ERA5 2015–2024)</div></div>';
 
   panel.innerHTML=html;
 }
 
-function pill(l,val,u,s){return'<div class="pill"><div class="label">'+l+'</div><div class="value">'+val+'<span class="unit">'+u+'</span></div>'+(s?'<div class="sub">'+s+'</div>':'')+'</div>'}
-
-// ok=data present, timedOut=request timed out (orange dot)
-function srcRow(ok, timedOut, l, info, extra){
-  var dotClass = ok ? "dot-ok" : timedOut ? "dot-timeout" : "dot-fail";
-  return'<div class="source-row"><span class="dot '+dotClass+'"></span><span class="source-label">'+l+'</span><span>'+info+(extra||"")+'</span></div>'
-}
-
-// Extra product row: dot-ok if data present, dot-off if not fetched (toggle off), dot-fail if fetched but empty
-function srcRowExtra(data, enabled, l, info){
-  var dotClass = data ? "dot-ok" : enabled ? "dot-fail" : "dot-off";
-  return'<div class="source-row"><span class="dot '+dotClass+'"></span><span class="source-label">'+l+'</span><span style="color:'+(enabled?"inherit":"var(--dim)")+'">'+info+'</span></div>'
-}
-
-// ─── UI ─────────────────────────────────────────────────
-document.getElementById("input-location").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();addNode()}});
-
-// ─── Init ───────────────────────────────────────────────
-document.getElementById("presets").innerHTML=PRESETS.map(function(p,i){return'<button class="preset-btn" onclick="addPreset('+i+')">'+esc(p.label)+' <span style="opacity:.5;font-size:10px">('+ROLE_LABELS[p.role]+')</span></button>'}).join("");
+// ── Init ──────────────────────────────────────────────────────────────────────
+document.getElementById("input-location").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();addNode();}});
+document.getElementById("presets").innerHTML=PRESETS.map(function(p,i){return'<button class="preset-btn" onclick="addPreset('+i+')">'+esc(p.label)+'</button>';}).join("");
 renderNodeList();renderTabs();fetchAllNodes();
 </script>
 </body>
