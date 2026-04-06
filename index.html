@@ -686,7 +686,25 @@ function buildExportPayload(){
     var nws=node.nws,uv=node.uv,obs=nws?nws.observation:null;
     var curObs=null;
     if(obs){
-      curObs={timestamp:obs.timestamp,temperature_f:cF(obs.temperature?obs.temperature.value:null),dewpoint_f:cF(obs.dewpoint?obs.dewpoint.value:null),humidity_pct:obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,wind_speed_mph:mphv(obs.windSpeed?obs.windSpeed.value:null),wind_direction:compass(obs.windDirection?obs.windDirection.value:null),wind_gust_mph:mphv(obs.windGust?obs.windGust.value:null),visibility_mi:mMi(obs.visibility?obs.visibility.value:null),pressure_inhg:inHg(obs.barometricPressure?obs.barometricPressure.value:null),sky:obs.textDescription,raw_metar:obs.rawMessage||null};
+      curObs={
+        timestamp:obs.timestamp,
+        temperature_f:cF(obs.temperature?obs.temperature.value:null),
+        dewpoint_f:cF(obs.dewpoint?obs.dewpoint.value:null),
+        humidity_pct:obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,
+        wind_speed_mph:mphv(obs.windSpeed?obs.windSpeed.value:null),
+        wind_direction:compass(obs.windDirection?obs.windDirection.value:null),
+        wind_gust_mph:mphv(obs.windGust?obs.windGust.value:null),
+        visibility_mi:mMi(obs.visibility?obs.visibility.value:null),
+        pressure_inhg:inHg(obs.barometricPressure?obs.barometricPressure.value:null),
+        sky:obs.textDescription,
+        present_weather:(obs.presentWeather||[]).map(function(w){
+          return{weather:w.weather||null,intensity:w.intensity||null,modifier:w.modifier||null};
+        }),
+        cloud_layers:(obs.cloudLayers||[]).map(function(c){
+          return{coverage:c.amount||null,base_ft:c.base&&c.base.value!=null?Math.round(c.base.value*3.281):null,cloud_type:c.cloudType||null};
+        }),
+        raw_metar:obs.rawMessage||null
+      };
     }
     var curUV=null;if(uv&&uv.hourly){var nowH=now.toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){curUV=uv.hourly.uv_index[ui];break;}}}
     var hrs=STATE.hourlyWindow;
