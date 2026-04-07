@@ -576,7 +576,8 @@ function fetchLSR(office){
 function fetchASOSPrecip(stationId){
   return nwsGet("https://api.weather.gov/stations/"+stationId+"/observations?limit=24",T_NWS_FC)
     .then(function(data){
-      var obs=(data.features||[]).map(function(f){var p=f.properties;return{timestamp:p.timestamp,precip_1hr_in:mmIn(p.precipitationLastHour?p.precipitationLastHour.value:null),precip_3hr_in:mmIn(p.precipitationLast3Hours?p.precipitationLast3Hours.value:null),precip_6hr_in:mmIn(p.precipitationLast6Hours?p.precipitationLast6Hours.value:null),sky:p.textDescription||null};}).filter(function(o){return o.precip_1hr_in!==null||o.precip_3hr_in!==null||o.precip_6hr_in!==null;});
+      var obs=(data.features||[]).map(function(f){var p=f.properties;return{timestamp:p.timestamp,precip_1hr_in:mmIn(p.precipitationLastHour?p.precipitationLastHour.value:null),precip_3hr_in:mmIn(p.precipitationLast3Hours?p.precipitationLast3Hours.value:null),precip_6hr_in:mmIn(p.precipitationLast6Hours?p.precipitationLast6Hours.value:null),raw_metar:obs.rawMessage||null,
+sky:p.textDescription||null,precip_lag_suspected:(function(){var desc=(p.textDescription||"").toLowerCase();var active=desc.indexOf("rain")>=0||desc.indexOf("drizzle")>=0||(p.presentWeather||[]).some(function(w){return w.weather==="rain"||w.weather==="drizzle";});var p1=mmIn(p.precipitationLastHour?p.precipitationLastHour.value:null);return(active&&p1!==null&&p1<0.05)?"GAUGE_LAG: active precip reported but 1hr accum <0.05in; tipping bucket delay likely":null;}())};}).filter(function(o){return o.precip_1hr_in!==null||o.precip_3hr_in!==null||o.precip_6hr_in!==null;});
       return{station:stationId,observations:obs};
     });
 }
@@ -693,7 +694,8 @@ function buildExportPayload(){
         humidity_pct:obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,
         wind_speed_mph:mphv(obs.windSpeed?obs.windSpeed.value:null),
         wind_direction:compass(obs.windDirection?obs.windDirection.value:null),
-        wind_gust_mph:mphv(obs.windGust?obs.windGust.value:null),
+        wind_gust_mph:(function(){var ws=mphv(obs.windSpeed?obs.windSpeed.value:null);var wg=mphv(obs.windGust?obs.windGust.value:null);return(wg!==null&&ws===null&&wg>50)?null:wg;}()),
+wind_gust_flag:(function(){var ws=mphv(obs.windSpeed?obs.windSpeed.value:null);var wg=mphv(obs.windGust?obs.windGust.value:null);return(wg!==null&&ws===null&&wg>50)?"ARTIFACT: raw gust "+wg+"mph suppressed — null sustained wind; sensor error":null;}()),
         visibility_mi:mMi(obs.visibility?obs.visibility.value:null),
         pressure_inhg:inHg(obs.barometricPressure?obs.barometricPressure.value:null),
         sky:obs.textDescription,
@@ -703,7 +705,8 @@ function buildExportPayload(){
         cloud_layers:(obs.cloudLayers||[]).map(function(c){
           return{coverage:c.amount||null,base_ft:c.base&&c.base.value!=null?Math.round(c.base.value*3.281):null,cloud_type:c.cloudType||null};
         }),
-        raw_metar:obs.rawMessage||null
+        raw_metar:obs.rawMessage||null,
+raw_metar_status:obs.rawMessage?"ok":(nws&&nws.stationId&&nws.stationId.charAt(0)==="K"?"MISSING: US ASOS station "+nws.stationId+" should return rawMessage — NWS API gap":null)
       };
     }
     var curUV=null;if(uv&&uv.hourly){var nowH=now.toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){curUV=uv.hourly.uv_index[ui];break;}}}
@@ -755,6 +758,7 @@ function buildExportPayload(){
       current_observations:curObs,current_uv_index:curUV,
       nws_hourly_forecast:nwsHourly,nws_7day_forecast:fc7,
       nws_gridpoint_qpf:node.gridpoint||null,
+qpf_divergence_flags:(function(){if(!node.gridpoint||!uv||!uv.daily)return null;var flags=[];var omByDate={};(uv.daily.time||[]).forEach(function(d,i){omByDate[d]=uv.daily.precipitation_sum?uv.daily.precipitation_sum[i]:null;});(node.gridpoint.qpf_daily_utc||[]).forEach(function(r){var omV=omByDate[r.date];if(omV==null)return;var nwsV=r.precip_in||0;if(nwsV===0&&omV===0)return;var ratio=omV>0?nwsV/omV:(nwsV>0?99:null);if(ratio===null)return;if(ratio>2.5)flags.push({date:r.date,nws_in:nwsV,om_in:omV,ratio:Math.round(ratio*10)/10,note:"NWS>>OM: model underforecast; GFS/ICON convective bias likely"});else if(ratio<0.4&&nwsV>0.05)flags.push({date:r.date,nws_in:nwsV,om_in:omV,ratio:Math.round(ratio*10)/10,note:"OM>>NWS: model overrunning NWS QPF"});});return flags.length?flags:null;}()),
       open_meteo_hourly:omH,open_meteo_daily:omD,astronomy:astro,
       climate_normals:node.climate||null,alerts:alerts,
       afd:afdTxt?{office:nws.office,issued:nws.afdTime,mode:STATE.afdMode,text:afdTxt}:null,
@@ -765,7 +769,7 @@ function buildExportPayload(){
       source_freshness:{observations:obs?obs.timestamp:null,hourly_forecast:nws?nws.hourlyUpdated:null,seven_day_forecast:nws?nws.forecastUpdated:null,afd:nws?nws.afdTime:null,nws_gridpoint_qpf:node.gridpoint?now.toISOString():null,open_meteo:now.toISOString(),climate_normals:node.climate?"ERA5 2015-2024 (10yr avg, 7-day window)":null,air_quality:node.aq?now.toISOString():null,wpc_ero:node.ero?node.ero.issued:null,wpc_mpd:node.mpd&&node.mpd.length?node.mpd[0].issued:null,hwo:node.hwo?node.hwo.issued:null,ecmwf_ifs:node.ecmwf?now.toISOString():null,ensemble:node.ensemble?now.toISOString():null}
     };
   });
-  var payload={_format:"weather-station-export-v2",_version:VERSION,_generated:now.toISOString(),_node_count:nodes.length,_note:"NWS gridpoint QPF is authoritative for US precipitation. OM daily precip_in from GFS/ICON — check precip_model_warning. ECMWF precipitation de-duped (Bug 1).",nodes:nodes};
+  var payload={_format:"weather-station-export-v2",_version:VERSION,_generated:now.toISOString(),_node_count:nodes.length,_note:"NWS gridpoint QPF is authoritative for US precipitation. OM daily precip_in from GFS/ICON — check precip_model_warning. ECMWF precipitation de-duped (Bug 1). Climate normals: ERA5 reanalysis 2015\u20132024 (supersedes NOAA NCEI 1991\u20132020).",nodes:nodes};
   if(STATE.extraProducts.spc&&STATE.spcData)payload.spc_outlook=STATE.spcData;
   return payload;
 }
