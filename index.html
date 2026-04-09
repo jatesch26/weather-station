@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather Station v4</title>
 <!--
-  v4.19.1 resilience patch (2026-04-08)
+  v4.19.2 wind artifact fix (2026-04-09)
   - NWS /points cached in localStorage (24h TTL) — eliminates primary timeout vector
   - fetchWTRetry: 1 auto-retry after 2.5s on timeout for all NWS calls
   - Timeout bumps: PTS 16s, FC 15s, OBS 10s, AFD 12s, GRID 20s
@@ -284,7 +284,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.19.1-2026-04-08";
+var VERSION="4.19.2-2026-04-09";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago ORD",lat:41.9742,lon:-87.9073,role:"destination"},
