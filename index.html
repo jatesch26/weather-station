@@ -3,1043 +3,1450 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Weather Station v4</title>
-<!--
-  v4.19.2 wind artifact fix (2026-04-09)
-  - NWS /points cached in localStorage (24h TTL) — eliminates primary timeout vector
-  - fetchWTRetry: 1 auto-retry after 2.5s on timeout for all NWS calls
-  - Timeout bumps: PTS 16s, FC 15s, OBS 10s, AFD 12s, GRID 20s
-  - Multi-node NWS stagger: 350ms between nodes to avoid rate limiting
-  - "Retry NWS only" button on error display — skips OM/ERA5 which already loaded
--->
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>EGR Weather · East Grand Rapids</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <style>
-:root{--bg:#0f1117;--card:#181b23;--border:#2a2d38;--text:#e8e9ed;--dim:#6b7084;--accent:#60a5fa;--warn:#fbbf24;--danger:#f87171;--success:#4ade80;--purple:#a78bfa;--orange:#f97316;--mono:'JetBrains Mono','SF Mono',monospace;--body:'DM Sans','Helvetica Neue',sans-serif}
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:1.5;padding:16px 20px 80px;min-height:100vh}
-.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px}
-.header h1{font-size:18px;font-weight:700;letter-spacing:-.02em}
-.header h1 .icon{color:var(--accent)}
-.header .sub{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:2px}
-.header .actions{display:flex;gap:8px;align-items:center}
-.btn{border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;font-family:var(--mono);transition:opacity .15s}
-.btn:hover{opacity:.85}.btn:disabled{opacity:.4;cursor:wait}
-.btn-primary{background:var(--accent);color:#0f1117}
-.btn-secondary{background:var(--card);color:var(--dim);border:1px solid var(--border)}
-.btn-export{background:var(--success);color:#0f1117;font-size:13px;padding:8px 18px}
-.btn-danger{background:transparent;color:var(--danger);border:1px solid var(--danger);padding:4px 10px;font-size:11px}
-.btn-sm{padding:4px 10px;font-size:11px}
-.fetch-time{font-size:11px;color:var(--dim);font-family:var(--mono)}
-.settings{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px 16px;margin-bottom:12px}
-.settings-hdr{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;padding:0}
-.settings-hdr-title{font-size:13px;font-weight:600;font-family:var(--mono);color:var(--dim);transition:color .15s}
-.settings-hdr:hover .settings-hdr-title{color:var(--text)}
-.settings-hdr-summary{font-size:11px;color:var(--dim);font-family:var(--mono);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.65;margin-left:4px}
-.settings-hdr-arrow{font-size:9px;color:var(--dim);transition:transform .2s;font-family:var(--mono);flex-shrink:0}
-.settings.open .settings-hdr-arrow{transform:rotate(90deg)}
-#settings-body{display:none;margin-top:12px}
-.settings.open #settings-body{display:block}
-.section-label{font-size:11px;color:var(--accent);font-family:var(--mono);font-weight:600;margin:12px 0 7px;text-transform:uppercase;letter-spacing:.06em}
-.section-label:first-child{margin-top:0}
-.settings label{font-size:11px;color:var(--dim);display:block;margin-bottom:4px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.05em}
-.settings input,.settings select{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:6px 10px;font-family:var(--mono);font-size:13px}
-.hint{font-size:10px;color:var(--dim);font-family:var(--mono);margin-top:4px;opacity:.7}
-.node-list{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
-.node-item{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 12px}
-.role-badge{font-size:10px;font-family:var(--mono);padding:2px 6px;border-radius:3px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
-.role-home{background:#60a5fa22;color:var(--accent)}.role-dest{background:#4ade8022;color:var(--success)}.role-conn{background:#fbbf2422;color:var(--warn)}.role-run{background:#a78bfa22;color:var(--purple)}
-.node-item .node-label{flex:1;font-size:13px;font-family:var(--mono)}
-.node-item .node-coords{font-size:11px;color:var(--dim);font-family:var(--mono);flex-shrink:0}
-.node-item .node-status{font-size:11px;font-family:var(--mono);flex-shrink:0}
-.add-node-row{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap}
-.add-node-row input{flex:1;min-width:200px}
-#geocode-status{font-size:11px;font-family:var(--mono);margin-top:4px;min-height:16px}
-.presets{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px}
-.preset-btn{background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--dim);padding:4px 10px;cursor:pointer;font-size:11px;font-family:var(--mono);transition:all .15s}
-.preset-btn:hover{border-color:var(--accent);color:var(--accent)}
-.ep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:7px;margin-bottom:4px}
-.ep-toggle{display:flex;gap:10px;align-items:flex-start;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px 11px;cursor:pointer;transition:border-color .15s}
-.ep-toggle:hover{border-color:var(--accent)44}
-.ep-toggle input[type=checkbox]{margin-top:2px;flex-shrink:0;accent-color:var(--accent);cursor:pointer}
-.ep-card-body{flex:1;min-width:0}
-.ep-title-row{display:flex;align-items:center;gap:6px}
-.ep-title{font-size:12px;font-family:var(--mono);font-weight:600;color:var(--text)}
-.ep-sub{font-size:10px;color:var(--dim);font-family:var(--mono)}
-.ep-hint{display:none;font-size:10px;color:var(--dim);font-family:var(--mono);margin-top:5px;padding-top:5px;border-top:1px solid var(--border);line-height:1.5;opacity:.8}
-.ep-toggle.hint-open .ep-hint{display:block}
-.ep-info-btn{background:none;border:1px solid var(--border)88;border-radius:3px;color:var(--dim);cursor:pointer;font-size:9px;padding:1px 5px;font-family:var(--mono);line-height:1.5;flex-shrink:0;transition:all .15s;margin-left:auto}
-.ep-info-btn:hover{border-color:var(--accent);color:var(--accent)}
-#sticky-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(18,21,30,.97);border-top:1px solid var(--border);padding:9px 20px;display:flex;align-items:center;justify-content:space-between;z-index:300;gap:12px;backdrop-filter:blur(10px);flex-wrap:wrap}
-.sticky-left{display:flex;align-items:center;gap:10px;flex:1;min-width:0;cursor:pointer;user-select:none}
-.sticky-left:hover .sdots-label{color:var(--accent)}
-.sdots-label{font-size:9px;color:var(--dim);font-family:var(--mono);text-transform:uppercase;letter-spacing:.07em;flex-shrink:0;transition:color .15s}
-.sdots-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
-.sdot{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-family:var(--mono);color:var(--dim);white-space:nowrap}
-.sdot .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-#sticky-status{font-size:11px;color:var(--dim);font-family:var(--mono);white-space:nowrap;flex-shrink:0}
-.sticky-right{display:flex;align-items:center;gap:7px;flex-shrink:0}
-#sticky-copy-status{font-size:11px;font-family:var(--mono);color:var(--success);opacity:0;transition:opacity .3s;white-space:nowrap}
-#sticky-copy-status.show{opacity:1}
-.csection{margin-top:12px}
-.csection-header{display:flex;align-items:center;gap:8px;cursor:pointer;padding:9px 13px;background:var(--card);border:1px solid var(--border);border-radius:8px;user-select:none;transition:border-color .15s}
-.csection-header:hover{border-color:var(--accent)55}
-.csection.open>.csection-header{border-radius:8px 8px 0 0;border-bottom-color:transparent}
-.csection-arrow{color:var(--dim);font-size:8px;transition:transform .2s;flex-shrink:0;font-family:var(--mono);width:10px;text-align:center}
-.csection.open>.csection-header .csection-arrow{transform:rotate(90deg)}
-.csection-title{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;font-family:var(--mono);color:var(--dim);flex-shrink:0}
-.csection-badges{display:flex;gap:5px;align-items:center;flex-shrink:0}
-.csection-summary{font-size:11px;color:var(--dim);font-family:var(--mono);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.6;margin-left:2px}
-.csection-body{display:none;background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;padding:13px}
-.csection.open>.csection-body{display:block}
-.sources-block{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:13px 15px;margin-top:12px}
-.sources-block h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;font-family:var(--mono);color:var(--dim);margin-bottom:10px}
-.src-group-label{font-size:9px;color:var(--accent);font-family:var(--mono);text-transform:uppercase;letter-spacing:.1em;font-weight:700;margin:12px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--border)88}
-.src-group-label:first-of-type{margin-top:0}
-.source-row{font-size:12px;font-family:var(--mono);margin-bottom:5px;display:flex;align-items:baseline;gap:0}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;flex-shrink:0;margin-top:1px}
-.dot-ok{background:var(--success)}.dot-fail{background:var(--danger)}.dot-timeout{background:var(--orange)}.dot-pend{background:var(--border)}.dot-off{background:var(--border)}
-.source-label{color:var(--dim);width:160px;display:inline-block;flex-shrink:0;font-size:11px}
-.src-detail{font-size:11px;color:var(--dim);flex:1}
-.src-detail .src-hi{color:var(--text)}
-.src-group-disabled{font-size:10px;color:var(--dim);font-family:var(--mono);opacity:.4;margin-top:7px;padding-top:7px;border-top:1px solid var(--border)44}
-.sources .sfooter,.sources-block .sfooter{font-size:10px;color:var(--dim);font-family:var(--mono);margin-top:10px;border-top:1px solid var(--border);padding-top:8px;opacity:.5;line-height:1.6}
-.node-tabs{display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap}
-.node-tab{background:var(--card);border:1px solid var(--border);border-radius:6px 6px 0 0;padding:7px 14px;cursor:pointer;font-size:11px;font-family:var(--mono);color:var(--dim);transition:all .15s}
-.node-tab:hover{color:var(--text)}
-.node-tab.active{background:var(--bg);border-bottom-color:var(--bg);color:var(--accent);font-weight:600}
-.node-tab .tab-role{font-size:9px;text-transform:uppercase;letter-spacing:.04em;display:block;margin-top:1px}
-.errors{background:#f8717122;border:1px solid #f8717144;border-radius:6px;padding:9px 13px;margin-bottom:10px}
-.errors div{font-size:12px;color:var(--danger);font-family:var(--mono)}
-.alert-box{border-radius:6px;padding:9px 13px;margin-bottom:7px}
-.alert-box.severe{background:#f8717122;border:1px solid #f8717144}
-.alert-box.moderate{background:#fbbf2422;border:1px solid #fbbf2444}
-.alert-title{font-weight:700;font-size:13px}
-.alert-headline{font-size:12px;color:var(--dim);margin-top:3px}
-.alert-time{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:3px}
-.section-header{display:flex;align-items:center;gap:8px;margin-bottom:9px}
-.section-header h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)}
-.badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:10px;font-weight:600;font-family:var(--mono);letter-spacing:.03em;line-height:17px}
-.badge-fresh{background:#4ade8022;color:var(--success)}
-.badge-precip{background:#60a5fa22;color:var(--accent)}
-.meta{font-size:11px;color:var(--dim);font-family:var(--mono)}
-.pills{display:flex;gap:9px;flex-wrap:wrap}
-.pill{background:var(--bg);border-radius:6px;padding:9px 13px;border:1px solid var(--border);min-width:90px}
-.pill .label{font-size:10px;color:var(--dim);font-family:var(--mono);margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em}
-.pill .value{font-size:20px;font-weight:700;font-family:var(--mono)}
-.pill .value .unit{font-size:12px;font-weight:400;color:var(--dim)}
-.pill .sub{font-size:11px;color:var(--dim);margin-top:2px}
-.chart-row{display:flex;gap:10px;flex-wrap:wrap}
-.chart-box{flex:1;min-width:260px;background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:11px}
-.chart-box h3{font-size:10px;font-family:var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px}
-.hourly-scroll{overflow-x:auto;padding-bottom:6px}
-.hourly-row{display:flex;gap:5px;min-width:max-content}
-.hour-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 9px;min-width:72px;text-align:center}
-.hour-card.now{background:#60a5fa18;border-color:#60a5fa44}
-.hour-card.day-boundary{border-left:2px solid var(--accent)}
-.hour-card .htime{font-size:10px;font-family:var(--mono);color:var(--dim);margin-bottom:3px}
-.hour-card .day-label{font-size:9px;font-family:var(--mono);color:var(--accent);margin-bottom:2px}
-.hour-card .htemp{font-size:17px;font-weight:700;font-family:var(--mono)}
-.hour-card .hdesc{font-size:9px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:70px}
-.hour-card .hwind{font-size:10px;font-family:var(--mono);color:var(--dim);margin-top:3px}
-.hour-card .hprecip{font-size:10px;font-family:var(--mono);color:var(--accent);margin-top:3px}
-.forecast-rows{display:flex;flex-direction:column;gap:3px}
-.forecast-row{display:flex;align-items:center;gap:10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:9px 13px}
-.forecast-row .fname{width:116px;font-weight:600;font-size:12px;font-family:var(--mono);flex-shrink:0}
-.forecast-row .ftemp{font-size:20px;font-weight:700;font-family:var(--mono);width:56px;text-align:right;flex-shrink:0}
-.forecast-row .ftemp .unit{font-size:11px;font-weight:400;color:var(--dim)}
-.forecast-row .fwind{font-size:11px;font-family:var(--mono);color:var(--dim);width:96px;flex-shrink:0}
-.forecast-row .fshort{font-size:12px;color:var(--dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.text-block{font-size:11px;font-family:var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:440px;overflow:auto;line-height:1.65;background:var(--bg);border-radius:5px;padding:12px}
-.afd-text{background:var(--card);border:1px solid var(--border);border-radius:6px;padding:13px;margin-top:7px;font-size:11px;font-family:var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:400px;overflow:auto;line-height:1.6;display:none}
-.afd-text.open{display:block}
-.afd-toggle{background:none;border:none;cursor:pointer;padding:0;display:flex;align-items:center;gap:8px}
-.astro-bar{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 13px;margin-top:8px;font-size:11px;font-family:var(--mono);color:var(--dim);display:flex;gap:14px;flex-wrap:wrap;align-items:center}
-.astro-item{display:flex;align-items:center;gap:4px}
-.astro-val{color:var(--text);font-weight:600}
-.climate-table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
-.climate-table th{padding:6px 11px;text-align:right;font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:600;border-bottom:1px solid var(--border)}
-.climate-table th:first-child{text-align:left}
-.climate-table td{padding:6px 11px;text-align:right;border-bottom:1px solid var(--border)}
-.climate-table td:first-child{text-align:left}
-.climate-table tr.cur{background:rgba(96,165,250,.06)}
-.climate-table tr.dimr td{color:var(--dim)}
-.loading{text-align:center;padding:36px 0;color:var(--dim);font-family:var(--mono);font-size:13px}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin-right:5px;vertical-align:middle}
-@keyframes spin{to{transform:rotate(360deg)}}
-#export-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:400;align-items:center;justify-content:center;padding:20px}
-#export-modal.open{display:flex}
-.modal-inner{background:var(--card);border:1px solid var(--border);border-radius:10px;max-width:800px;width:100%;max-height:80vh;display:flex;flex-direction:column}
-.modal-header{display:flex;justify-content:space-between;align-items:center;padding:13px 17px;border-bottom:1px solid var(--border)}
-.modal-header h3{font-size:13px;font-family:var(--mono);color:var(--dim);text-transform:uppercase}
-.modal-inner pre{padding:17px;font-size:11px;font-family:var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word;overflow:auto;flex:1;line-height:1.5}
-@media(max-width:600px){body{padding:10px 12px 80px}.pill{min-width:78px;padding:7px 9px}.pill .value{font-size:17px}.forecast-row .fname{width:78px;font-size:11px}.forecast-row .fwind{display:none}.ep-grid{grid-template-columns:1fr}.sticky-left{display:none}.sticky-right{width:100%;justify-content:flex-end}}
+:root {
+  --bg:#0f1118;--surface:#13161f;--card:#1c2030;--border:#2a3048;--border2:#363d5e;
+  --text:#f0f2f8;--dim:#8b92ad;--dim2:#646b8a;
+  --accent:#5b9cf6;--accent2:#3b7de8;
+  --success:#3dd68c;--warn:#f0a429;--danger:#f06060;--purple:#9b72f8;
+  --snow:#a8d8f0;--freeze:#60c4f8;--water:#7dd3fc;
+  --tornado:#ef4444;--flood:#22c55e;--wind-alert:#f97316;--heat:#fb923c;
+  --mono:'JetBrains Mono','Fira Code',ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;min-height:100vh}
+.page{max-width:1400px;margin:0 auto;padding:14px 16px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+
+.topbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 0 14px}
+.topbar-title{font-size:15px;font-weight:600;letter-spacing:0.02em}
+.topbar-title span{color:var(--accent)}
+.topbar-meta{font-size:10.5px;color:var(--dim);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.snap-age{padding:2px 8px;border-radius:4px;border:0.5px solid var(--border2);color:var(--dim)}
+.snap-age.stale{border-color:#78350f;color:#fbbf24}
+.snap-age.crit{border-color:#7f1d1d;color:#f87171}
+
+.src-dot{display:inline-block;width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.src-dot.live{background:var(--success);animation:pulse 2s infinite}
+.src-dot.live-stale{background:var(--warn)}
+.src-dot.live-dead{background:var(--danger)}
+.src-dot.snap{background:var(--warn)}
+.src-dot.snap-crit{background:var(--danger)}
+.src-label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:0.04em;display:inline-flex;align-items:center;gap:5px}
+.src-label .src-when{color:var(--dim2);text-transform:none;letter-spacing:0;font-size:9.5px}
+.src-row{display:flex;align-items:center;gap:5px;margin-top:4px}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+
+.alert-banner{border-radius:8px;padding:9px 14px;margin-bottom:10px;display:flex;align-items:flex-start;gap:10px;font-size:11.5px;line-height:1.5}
+.alert-freeze{background:#0d1a2e;border:0.5px solid #1e4a7a;color:#93c5fd}
+.alert-warn{background:#1c1200;border:0.5px solid #78350f;color:#fbbf24}
+.alert-danger{background:#1c0000;border:0.5px solid #7f1d1d;color:#f87171}
+.alert-icon{font-size:14px;flex-shrink:0;margin-top:1px}
+.alert-snow{background:#0a1520;border:0.5px solid #2a4a6a;color:var(--snow)}
+.alert-ice{background:#1a1400;border:0.5px solid #5a4a00;color:#fde68a}
+.alert-winter{background:#140a20;border:0.5px solid #4a2a7a;color:var(--purple)}
+.alert-tornado{background:#200000;border:0.5px solid #7f1010;color:#fca5a5}
+.alert-severe-tstorm{background:#1a0a2e;border:0.5px solid #6d28d9;color:#c4b5fd}
+.alert-flood{background:#001a0a;border:0.5px solid #166534;color:#86efac}
+.alert-flashflood{background:#002010;border:0.5px solid #15803d;color:#4ade80}
+.alert-highwind{background:#1a0e00;border:0.5px solid #92400e;color:#fdba74}
+.alert-heat{background:#1a0800;border:0.5px solid #9a3412;color:#fed7aa}
+.alert-fog{background:#111318;border:0.5px solid #374151;color:#9ca3af}
+.alert-aqi{background:#111100;border:0.5px solid #525200;color:#d4d400}
+.alert-special{background:#0e0e1a;border:0.5px solid #3730a3;color:#a5b4fc}
+
+/* Snow/ice forecast panel */
+.snow-panel{background:var(--card);border:0.5px solid rgba(168,216,240,0.3);border-radius:10px;padding:11px 14px;margin-bottom:10px}
+.snow-panel-title{font-size:11px;font-weight:500;color:var(--snow);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.snow-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px}
+.snow-cell{background:var(--surface);border-radius:6px;padding:8px 10px;border:0.5px solid rgba(168,216,240,0.15)}
+.snow-cell-label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px}
+.snow-cell-val{font-size:17px;font-weight:600;color:var(--snow)}
+.snow-cell-sub{font-size:10px;color:var(--dim);margin-top:2px}
+.ice-flag{background:rgba(253,230,138,0.08);border:0.5px solid rgba(253,230,138,0.3);border-radius:6px;padding:7px 10px;font-size:11px;color:#fde68a;display:flex;gap:8px;align-items:flex-start;margin-top:6px}
+.mix-flag{background:rgba(240,164,41,0.08);border:0.5px solid rgba(240,164,41,0.3);border-radius:6px;padding:7px 10px;font-size:11px;color:var(--warn);display:flex;gap:8px;align-items:flex-start;margin-top:6px}
+@media(max-width:600px){.snow-grid{grid-template-columns:1fr 1fr}}
+
+.panel{background:var(--card);border:0.5px solid var(--border);border-radius:10px;padding:11px 14px;margin-bottom:10px}
+.panel-title{font-size:11px;font-weight:500;color:var(--text);letter-spacing:0.04em;text-transform:uppercase;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px}
+.panel-sub{font-size:10px;color:var(--dim);margin-bottom:7px;line-height:1.5}
+
+.stat-card{background:var(--card);border:0.5px solid var(--border);border-radius:8px;padding:9px 12px;position:relative}
+.stat-label{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px}
+.stat-val{font-size:20px;font-weight:600;line-height:1;margin-bottom:2px}
+.stat-sub{font-size:10px;color:var(--dim)}
+.stat-card.ac-freeze{border-color:#1e4a7a}
+.stat-card.ac-warn{border-color:#78350f}
+.stat-card.ac-ok{border-color:#14532d}
+
+/* ── Two-zone top layout ── */
+.top-zones{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+@media(max-width:900px){.top-zones{grid-template-columns:1fr}}
+
+/* Zone 1 — NWS Sky & Forecast */
+.zone-nws{background:var(--card);border:0.5px solid var(--accent2);border-radius:10px;padding:12px 14px}
+.zone-label{font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;display:flex;align-items:center;gap:7px}
+.zone-label-nws{color:var(--accent)}
+.zone-label-live{color:var(--success)}
+.nws-obs-row{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.nws-temp{font-size:36px;font-weight:700;color:var(--accent);line-height:1}
+.nws-sky{font-size:12px;color:var(--dim);margin-bottom:8px}
+.nws-details{display:grid;grid-template-columns:1fr 1fr;gap:3px 16px}
+.nws-row{font-size:10.5px;color:var(--dim);line-height:1.7}
+.nws-row span{color:var(--text)}
+.nws-fc-strip{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;padding-top:10px;border-top:0.5px solid var(--border)}
+.nws-fc-cell{background:var(--surface);border-radius:6px;padding:7px 10px}
+.nws-fc-label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px}
+.nws-fc-val{font-size:18px;font-weight:600;line-height:1;margin-bottom:2px}
+.nws-fc-sub{font-size:10px;color:var(--dim)}
+
+/* Zone 2 — EGR Lakefront live */
+.zone-live{background:var(--card);border:0.5px solid #1a3a1a;border-radius:10px;padding:12px 14px}
+.live-main-row{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+.live-temp{font-size:36px;font-weight:700;color:var(--success);line-height:1}
+.live-sky{font-size:12px;color:var(--dim);margin-bottom:8px}
+.live-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+.live-cell{background:var(--surface);border-radius:5px;padding:5px 8px}
+.live-cell-label{font-size:8.5px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px}
+.live-cell-val{font-size:13px;font-weight:500}
+.live-cell-val .unit{font-size:9.5px;color:var(--dim);margin-left:2px}
+.mem-divider{border-top:0.5px solid var(--border);margin:8px 0 6px;padding-top:6px}
+.mem-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.mem-label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;flex-shrink:0}
+.mem-item{display:flex;flex-direction:column;gap:1px}
+.mem-item-label{font-size:8.5px;color:var(--dim2)}
+.mem-item-val{font-size:13px;font-weight:500}
+
+
+.dur-bar{display:flex;gap:4px;flex-wrap:wrap}
+.dur-btn{background:var(--surface);border:0.5px solid var(--border2);border-radius:4px;color:var(--dim);font-family:var(--mono);font-size:10px;padding:3px 8px;cursor:pointer;transition:all 0.12s}
+.dur-btn:hover{border-color:var(--accent);color:var(--accent)}
+.dur-btn.active{background:rgba(91,156,246,0.15);border-color:var(--accent);color:var(--accent)}
+
+.chart-wrap{position:relative;width:100%}
+.chart-empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--dim);pointer-events:none;text-align:center}
+.legend{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px;font-size:10px;color:var(--dim)}
+.lsw{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:3px;border-radius:1px}
+.lbox{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:middle;margin-right:3px}
+
+.day-strip-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;padding-bottom:4px}
+.day-strip{display:flex;gap:6px;min-width:max-content}
+.day-card{background:var(--surface);border:0.5px solid var(--border);border-radius:7px;padding:7px 8px;text-align:center;min-width:80px;flex-shrink:0}
+.day-card.today{border-color:var(--accent2)}
+.day-name{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px}
+.day-icon{font-size:15px;margin-bottom:2px}
+.day-hi{font-size:14px;font-weight:600}
+.day-lo{font-size:11px;color:var(--dim);margin-top:1px}
+.day-pop{font-size:9.5px;margin-top:3px;padding:1px 5px;border-radius:3px;display:inline-block}
+.pop-rain{background:rgba(91,156,246,0.2);color:var(--accent)}
+.pop-snow{background:rgba(168,216,240,0.2);color:var(--snow)}
+.pop-none{color:var(--dim2)}
+
+.station-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+.st-cell{background:var(--surface);border-radius:5px;padding:6px 9px}
+.st-label{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px}
+.st-val{font-size:14px;font-weight:500}
+.st-val .unit{font-size:10px;color:var(--dim);margin-left:2px}
+
+/* AFD formatted */
+.afd-section{margin-bottom:10px}
+.afd-section-title{font-size:9px;color:var(--accent);text-transform:uppercase;letter-spacing:0.07em;font-weight:600;padding:3px 0;border-bottom:0.5px solid var(--border);margin-bottom:6px}
+.afd-key-list{list-style:none;padding:0;margin:0}
+.afd-key-list li{display:flex;gap:8px;padding:5px 0;border-bottom:0.5px solid var(--border);font-size:11.5px;color:var(--dim);line-height:1.6}
+.afd-key-list li:last-child{border-bottom:none}
+.afd-key-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:7px;background:var(--accent)}
+.afd-disc-para{font-size:11px;color:var(--dim);line-height:1.7;margin-bottom:8px;padding:0 2px}
+.afd-disc-para:last-child{margin-bottom:0}
+.afd-disc-subhead{font-size:10px;color:var(--warn);text-transform:uppercase;letter-spacing:0.05em;font-weight:600;margin:10px 0 4px}
+.afd-forecaster{font-size:10px;color:var(--dim2);margin-top:8px;padding-top:6px;border-top:0.5px solid var(--border)}
+
+.footer{text-align:center;padding:16px 0;font-size:10px;color:var(--dim2);border-top:0.5px solid var(--border);margin-top:6px}
+.footer a{color:var(--dim);text-decoration:none}
+
+@media(max-width:900px){.grid4{grid-template-columns:1fr 1fr}.grid2{grid-template-columns:1fr}.egr-body{grid-template-columns:1fr}}
+@media(max-width:600px){.station-grid{grid-template-columns:1fr 1fr}.snow-grid{grid-template-columns:1fr 1fr}}
 </style>
 </head>
 <body>
+<div class="page">
 
-<div class="header">
+<div class="topbar">
   <div>
-    <h1><span class="icon">&#9672;</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector &middot; <span style="opacity:.5">v4.19.1</span></div>
+    <div class="topbar-title">EGR Weather · <span>East Grand Rapids</span></div>
+    <div style="font-size:10px;color:var(--dim);margin-top:2px">NWS GRR · KGRR · Reeds Lake Lakefront · 42.946°N 85.607°W</div>
   </div>
-  <div class="actions">
-    <span class="fetch-time" id="fetch-time"></span>
-    <button class="btn btn-primary" id="refresh-btn" onclick="fetchAllNodes()">&#8635; Fetch All</button>
-  </div>
-</div>
-
-<div class="settings" id="settings-panel">
-  <div class="settings-hdr" onclick="toggleSettings()">
-    <span class="settings-hdr-arrow">&#9654;</span>
-    <span class="settings-hdr-title">&#9881; Configure</span>
-    <span class="settings-hdr-summary" id="settings-summary"></span>
-  </div>
-  <div id="settings-body">
-    <div class="section-label">Quick Add</div>
-    <div class="presets" id="presets"></div>
-    <div class="section-label">Add Location</div>
-    <div class="add-node-row">
-      <input id="input-location" placeholder="City/State, ZIP, address, or lat,lon">
-      <select id="input-role">
-        <option value="home_base">Home Base</option>
-        <option value="destination">Destination</option>
-        <option value="connection">Connection</option>
-        <option value="run_location">Run Location</option>
-      </select>
-      <button class="btn btn-primary btn-sm" onclick="addNode()">+ Add</button>
-    </div>
-    <div id="geocode-status"></div>
-    <div class="hint">NWS forecast + QPF is US-only. Non-US nodes get Open-Meteo only. ERA5 climate normals load automatically everywhere.</div>
-    <div class="section-label">Active Nodes</div>
-    <div class="node-list" id="node-list"></div>
-    <div class="section-label">Export Options</div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-      <div><label>Hourly Window</label><select id="input-hours" onchange="STATE.hourlyWindow=parseInt(this.value);updateSettingsSummary()"><option value="12">12 h</option><option value="24">24 h</option><option value="48">48 h</option><option value="72" selected>72 h</option></select></div>
-      <div><label>Include AFD</label><select id="input-afd" onchange="STATE.afdMode=this.value"><option value="full" selected>Full text</option><option value="summary">2000 chars</option><option value="none">None</option></select></div>
-    </div>
-
-    <div class="section-label">NWS Extra Products <span style="font-size:10px;font-weight:400;opacity:.5;text-transform:none;letter-spacing:0">(opt-in &middot; re-fetch to apply)</span></div>
-    <div class="ep-grid">
-      <label class="ep-toggle" id="ep-ero"><input type="checkbox" id="tog-ero" onchange="STATE.extraProducts.ero=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">WPC ERO</div><div class="ep-sub">Excessive Rainfall Outlook</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-ero')">ⓘ</button></div><div class="ep-hint">Risk categories from WPC. Independent QPF risk assessment.</div></div></label>
-      <label class="ep-toggle" id="ep-mpd"><input type="checkbox" id="tog-mpd" onchange="STATE.extraProducts.mpd=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">WPC MPD</div><div class="ep-sub">Mesoscale Precip Discussion</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-mpd')">ⓘ</button></div><div class="ep-hint">Issued in real time during active events. Highest signal for training scenarios.</div></div></label>
-      <label class="ep-toggle" id="ep-lsr"><input type="checkbox" id="tog-lsr" onchange="STATE.extraProducts.lsr=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">LSR</div><div class="ep-sub">Local Storm Reports</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-lsr')">ⓘ</button></div><div class="ep-hint">Ground truth from spotters and ASOS. Real-time rainfall totals.</div></div></label>
-      <label class="ep-toggle" id="ep-asos"><input type="checkbox" id="tog-asosPrecip" onchange="STATE.extraProducts.asosPrecip=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">ASOS Hourly Precip</div><div class="ep-sub">Station accumulation · 24h</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-asos')">ⓘ</button></div><div class="ep-hint">Measured rainfall at NWS obs station. Ground truth anchor during events.</div></div></label>
-      <label class="ep-toggle" id="ep-hwo"><input type="checkbox" id="tog-hwo" onchange="STATE.extraProducts.hwo=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">HWO</div><div class="ep-sub">Hazardous Weather Outlook</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-hwo')">ⓘ</button></div><div class="ep-hint">7-day threat summary from local NWS office. More concise than AFD for planning.</div></div></label>
-      <label class="ep-toggle" id="ep-spc"><input type="checkbox" id="tog-spc" onchange="STATE.extraProducts.spc=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">SPC Outlook</div><div class="ep-sub">Day 1 + Day 2 Convective</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-spc')">ⓘ</button></div><div class="ep-hint">Storm Prediction Center categorical risk (TSTM→MRGL→SLGT→ENH→MDT→HIGH). National product.</div></div></label>
-    </div>
-
-    <div class="section-label">Open-Meteo Variables <span style="font-size:10px;font-weight:400;opacity:.5;text-transform:none;letter-spacing:0">(opt-in &middot; appended to existing request)</span></div>
-    <div class="ep-grid">
-      <label class="ep-toggle" id="ep-qpf"><input type="checkbox" id="tog-qpf" onchange="STATE.omVars.qpf=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">OM QPF</div><div class="ep-sub">precipitation, rain, showers, snowfall</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-qpf')">ⓘ</button></div><div class="ep-hint">Modeled hourly accum. GFS/ICON can 2-7x overestimate convective events — cross-check NWS QPF.</div></div></label>
-      <label class="ep-toggle" id="ep-conv"><input type="checkbox" id="tog-conv" onchange="STATE.omVars.convective=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">Convective Params</div><div class="ep-sub">CAPE, Lifted Index, CIN</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-conv')">ⓘ</button></div><div class="ep-hint">CAPE &gt;1000 J/kg notable. LI &lt;0 = unstable atmosphere. Essential for thunderstorm depth.</div></div></label>
-      <label class="ep-toggle" id="ep-bld"><input type="checkbox" id="tog-bld" onchange="STATE.omVars.bld=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">Boundary Layer</div><div class="ep-sub">mixing layer depth, hourly</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-bld')">ⓘ</button></div><div class="ep-hint">Convective ceiling and smoke transport depth. Higher = better mixing.</div></div></label>
-      <label class="ep-toggle" id="ep-frz"><input type="checkbox" id="tog-frz" onchange="STATE.omVars.freezing=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">Freezing Level</div><div class="ep-sub">freezing_level_height, snowfall_height</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-frz')">ⓘ</button></div><div class="ep-hint">Snow level in feet. Critical shoulder-season precip-type indicator.</div></div></label>
-      <label class="ep-toggle" id="ep-aq"><input type="checkbox" id="tog-aq" onchange="STATE.extraProducts.aq=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">Air Quality</div><div class="ep-sub">AQI, PM2.5, PM10, O₃, dust</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-aq')">ⓘ</button></div><div class="ep-hint">Open-Meteo AQ API. 3-day hourly + current snapshot. Separate request per node.</div></div></label>
-    </div>
-    <div style="font-size:10px;color:var(--dim);font-family:var(--mono);margin:7px 0 4px;opacity:.6">Additional models — one extra request per node</div>
-    <div class="ep-grid">
-      <label class="ep-toggle" id="ep-ecmwf"><input type="checkbox" id="tog-ecmwf" onchange="STATE.omModels.ecmwf=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">ECMWF IFS</div><div class="ep-sub">European Centre · 9km · 10-day</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-ecmwf')">ⓘ</button></div><div class="ep-hint">Independent model. Better medium-range skill past day 5. Precipitation de-duped (Bug 1 fix).</div></div></label>
-      <label class="ep-toggle" id="ep-ens"><input type="checkbox" id="tog-ens" onchange="STATE.omModels.ensemble=this.checked;updateSettingsSummary()"><div class="ep-card-body"><div class="ep-title-row"><div class="ep-title">Ensemble Spread</div><div class="ep-sub">ICON EPS · p10/median/p90</div><button class="ep-info-btn" onclick="event.stopPropagation();event.preventDefault();toggleHint('ep-ens')">ⓘ</button></div><div class="ep-hint">Forecast uncertainty quantification. Wide spread = low confidence.</div></div></label>
-    </div>
-
-    <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px">
-      <button class="btn btn-primary" onclick="fetchAllNodes()" style="padding:7px 18px;font-size:12px">&#8635; Apply &amp; Re-fetch All</button>
-      <span style="font-size:11px;color:var(--dim);font-family:var(--mono)">Re-fetches all nodes with current toggle state</span>
-    </div>
+  <div class="topbar-meta">
+    <span class="src-label"><span class="src-dot live" id="topLiveDot"></span><span id="topLiveLabel">STATION</span> <span class="src-when" id="topLiveWhen">· loading…</span></span>
+    <span class="snap-age" id="snapAge"><span class="src-dot snap" style="margin-right:6px"></span>NWS · loading…</span>
   </div>
 </div>
 
-<div class="node-tabs" id="node-tabs"></div>
-<div id="loading" class="loading" style="display:none"><span class="spinner"></span>Fetching live data&hellip;</div>
-<div id="node-panels"></div>
+<!-- Alert banners -->
+<div id="alertBanners"></div>
 
-<div id="sticky-bar">
-  <div class="sticky-left" onclick="scrollToSources()" title="Jump to sources">
-    <span class="sdots-label">Sources</span>
-    <div class="sdots-row" id="sticky-dots">
-      <span class="sdot"><span class="dot dot-off"></span>—</span>
-    </div>
+<!-- Snow/ice panel — rendered only when snowfall_periods or ice_periods present -->
+<div id="snowPanel" style="display:none" class="snow-panel">
+  <div class="snow-panel-title">
+    <span>❄️ Winter Precipitation Forecast · NWS GRR</span>
+    <span class="src-label"><span class="src-dot snap" id="snowDot"></span>FORECAST</span>
   </div>
-  <div id="sticky-status"></div>
-  <div class="sticky-right">
-    <span id="sticky-copy-status">&#10003; Copied!</span>
-    <button class="btn btn-secondary btn-sm" onclick="showPreview()">Preview JSON</button>
-    <button class="btn btn-secondary btn-sm" id="sticky-fetch-btn" onclick="fetchAllNodes()">&#8635; Fetch All</button>
-    <button class="btn btn-secondary btn-sm" id="sticky-apply-btn" onclick="fetchAllNodes()">Apply &amp; Re-fetch</button>
-    <button class="btn btn-export" onclick="copyForClaude()" style="padding:7px 16px;font-size:12px">&#128203; Copy for Claude</button>
+  <div class="snow-grid" id="snowGrid"></div>
+  <div id="iceFlag" style="display:none" class="ice-flag">
+    <span>🧊</span><div id="iceFlagText"></div>
+  </div>
+  <div id="mixFlag" style="display:none" class="mix-flag">
+    <span>⚠️</span><div id="mixFlagText"></div>
   </div>
 </div>
 
-<div id="export-modal" onclick="if(event.target===this)closePreview()">
-  <div class="modal-inner">
-    <div class="modal-header">
-      <h3>Export Preview</h3>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-export" onclick="copyForClaude();closePreview()">&#128203; Copy</button>
-        <button class="btn btn-secondary" onclick="closePreview()">Close</button>
+<!-- ── Two-zone top layout ── -->
+<div class="top-zones">
+
+  <!-- Zone 1: NWS Sky & Forecast -->
+  <div class="zone-nws">
+    <div class="zone-label zone-label-nws">
+      <span class="src-dot snap" id="nwsZoneDot"></span>
+      NWS · KGRR Observation + Forecast
+      <span style="margin-left:auto;font-size:9px;color:var(--dim2);text-transform:none;letter-spacing:0" id="nwsZoneWhen"></span>
+    </div>
+    <div class="nws-obs-row">
+      <div class="nws-temp" id="nwsTemp">—</div>
+      <div style="font-size:11px;color:var(--dim)" id="nwsObsAge"></div>
+    </div>
+    <div class="nws-sky" id="nwsSky">loading…</div>
+    <div class="nws-details">
+      <div class="nws-row">Humidity <span id="nwsHum">—</span></div>
+      <div class="nws-row">Dew point <span id="nwsDew">—</span></div>
+      <div class="nws-row">Wind <span id="nwsWind">—</span></div>
+      <div class="nws-row">Pressure <span id="nwsPres">—</span></div>
+      <div class="nws-row">Visibility <span id="nwsVis">—</span></div>
+    </div>
+    <!-- NWS forecast highlights -->
+    <div class="nws-fc-strip">
+      <div class="nws-fc-cell" id="cardTonightLow">
+        <div class="nws-fc-label">Tonight low</div>
+        <div class="nws-fc-val" id="statTonightVal" style="color:var(--freeze)">—</div>
+        <div class="nws-fc-sub" id="statTonightSub">loading…</div>
+        <div class="src-row" style="margin-top:5px"><span class="src-dot snap" id="snapTonightDot"></span><span class="src-label">NWS FORECAST <span class="src-when" id="snapTonightWhen"></span></span></div>
+      </div>
+      <div class="nws-fc-cell" id="cardNextRain">
+        <div class="nws-fc-label">Next rain</div>
+        <div class="nws-fc-val" id="statNextRainVal" style="color:var(--warn)">—</div>
+        <div class="nws-fc-sub" id="statNextRainSub">loading…</div>
+        <div class="src-row" style="margin-top:5px"><span class="src-dot snap" id="snapNextDot"></span><span class="src-label">NWS FORECAST <span class="src-when" id="snapNextWhen"></span></span></div>
       </div>
     </div>
-    <pre id="export-modal-content">No data yet.</pre>
   </div>
+
+  <!-- Zone 2: EGR Lakefront live stations -->
+  <div class="zone-live">
+    <div class="zone-label zone-label-live">
+      <span class="src-dot live" id="stationDot"></span>
+      EGR Lakefront · Live
+      <span style="margin-left:auto;font-size:9px;color:var(--dim2);text-transform:none;letter-spacing:0" id="stationTime">loading…</span>
+    </div>
+    <div class="live-main-row">
+      <div class="live-temp" id="st-temp">—</div>
+      <div style="font-size:11px;color:var(--dim)" id="liveObsAge"></div>
+    </div>
+    <div class="live-sky" id="liveSky" style="color:var(--dim)"></div>
+    <div class="live-grid">
+      <div class="live-cell"><div class="live-cell-label">Humidity</div><div class="live-cell-val" id="st-hum">—</div></div>
+      <div class="live-cell"><div class="live-cell-label">Rain rate</div><div class="live-cell-val" id="st-rate" style="color:var(--accent)">—</div></div>
+      <div class="live-cell"><div class="live-cell-label">Rain today</div><div class="live-cell-val" id="liveDay">—</div></div>
+      <div class="live-cell"><div class="live-cell-label">Rain storm</div><div class="live-cell-val" id="st-storm">—</div></div>
+      <div class="live-cell"><div class="live-cell-label">Barometer</div><div class="live-cell-val" id="st-baro">—</div></div>
+      <div class="live-cell"><div class="live-cell-label">Wind / gust</div><div class="live-cell-val" id="st-windgust">—</div></div>
+      <div class="live-cell" style="border:0.5px solid rgba(125,211,252,0.2)"><div class="live-cell-label" style="color:var(--water)">Water temp · lake</div><div class="live-cell-val" id="st-water" style="color:var(--water)">—</div></div>
+    </div>
+    <!-- Memorial Field sub-section -->
+    <div class="mem-divider" id="memSection" style="display:none">
+      <div class="mem-row">
+        <div class="mem-label">⛳ Memorial Field wind</div>
+        <div class="mem-item"><div class="mem-item-label">Avg</div><div class="mem-item-val" id="memWindAvg">—</div></div>
+        <div class="mem-item"><div class="mem-item-label">High</div><div class="mem-item-val" id="memWindHigh">—</div></div>
+        <div class="mem-item"><div class="mem-item-label">Dir</div><div class="mem-item-val" id="memWindDir">—</div></div>
+        <div style="margin-left:auto"><span class="src-label"><span class="src-dot live" id="memDot"></span>LIVE</span></div>
+      </div>
+    </div>
+    <!-- Live rain quick stats -->
+    <div style="display:flex;gap:8px;margin-top:8px;padding-top:8px;border-top:0.5px solid var(--border)">
+      <div style="flex:1;background:var(--surface);border-radius:5px;padding:5px 8px">
+        <div class="live-cell-label">Rain rate</div>
+        <div style="font-size:15px;font-weight:600;color:var(--success)" id="liveRate">—</div>
+        <div style="font-size:9.5px;color:var(--dim)" id="liveRateSub"></div>
+      </div>
+      <div style="flex:1;background:var(--surface);border-radius:5px;padding:5px 8px">
+        <div class="live-cell-label">Storm total</div>
+        <div style="font-size:15px;font-weight:600" id="liveDaySub2">—</div>
+        <div style="font-size:9.5px;color:var(--dim)" id="liveDaySub">—</div>
+      </div>
+      <div style="flex:1;background:var(--surface);border-radius:5px;padding:5px 8px">
+        <div class="live-cell-label" id="liveRateWhen" style="text-transform:none;letter-spacing:0"></div>
+        <div style="font-size:9.5px;color:var(--dim2);margin-top:2px">Reeds Lake Lakefront</div>
+        <div style="font-size:9.5px;color:var(--dim2)">Davis Vantage Pro2</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- .top-zones -->
+
+<!-- Station time series -->
+<div class="panel">
+  <div class="panel-title">
+    <span>EGR Lakefront · time series <span class="src-label" style="margin-left:6px"><span class="src-dot live" id="seriesDot"></span>LIVE</span></span>
+    <div class="dur-bar" id="durMain">
+      <button class="dur-btn" data-h="3">3h</button>
+      <button class="dur-btn" data-h="6">6h</button>
+      <button class="dur-btn" data-h="12">12h</button>
+      <button class="dur-btn active" data-h="24">24h</button>
+      <button class="dur-btn" data-h="168">7d</button>
+      <button class="dur-btn" data-h="720">30d</button>
+      <button class="dur-btn" data-h="2160">90d</button>
+    </div>
+  </div>
+  <div class="panel-sub" style="margin-top:0;margin-bottom:8px;color:var(--dim2);font-size:9.5px;text-transform:uppercase;letter-spacing:0.05em">Precipitation</div>
+  <div class="legend">
+    <span><span class="lbox" style="background:rgba(91,156,246,0.55)"></span>Rain day cumulative (in)</span>
+    <span><span class="lsw" style="background:var(--danger)"></span>Rain rate (in/hr)</span>
+  </div>
+  <div class="chart-wrap" style="height:170px"><canvas id="cPrecip"></canvas><div class="chart-empty" id="cPrecipEmpty" style="display:none">No precipitation in window</div></div>
+  <div class="panel-sub" style="margin-top:14px;margin-bottom:8px;color:var(--dim2);font-size:9.5px;text-transform:uppercase;letter-spacing:0.05em">Wind</div>
+  <div class="legend">
+    <span><span class="lsw" style="background:var(--warn)"></span>10-min gust (mph)</span>
+    <span><span class="lsw" style="background:rgba(240,164,41,0.5)"></span>Wind speed (mph)</span>
+  </div>
+  <div class="chart-wrap" style="height:150px"><canvas id="cWind"></canvas></div>
+  <div class="panel-sub" style="margin-top:14px;margin-bottom:8px;color:var(--dim2);font-size:9.5px;text-transform:uppercase;letter-spacing:0.05em">Water Temperature · Reeds Lake</div>
+  <div class="legend">
+    <span><span class="lsw" style="background:var(--water)"></span>Lake water temp (°F)</span>
+  </div>
+  <div class="chart-wrap" style="height:150px"><canvas id="cWaterShort"></canvas><div class="chart-empty" id="cWaterShortEmpty" style="display:none">No water temp readings in window</div></div>
+  <div class="panel-sub" style="margin-top:14px;margin-bottom:8px;color:var(--dim2);font-size:9.5px;text-transform:uppercase;letter-spacing:0.05em">Air Temperature · Station</div>
+  <div class="legend">
+    <span><span class="lsw" style="background:var(--warn)"></span>Air temp (°F)</span>
+    <span><span style="display:inline-block;width:14px;height:0;border-top:1.5px dashed rgba(96,196,248,0.5);vertical-align:middle;margin-right:3px"></span>32°F</span>
+  </div>
+  <div class="chart-wrap" style="height:140px"><canvas id="cAirTemp"></canvas></div>
+  <div id="stationNote" style="font-size:10px;color:var(--dim);margin-top:8px"></div>
+</div>
+
+<!-- Hourly forecast -->
+<div class="panel">
+  <div class="panel-title">
+    <span>Hourly forecast · PoP + temp <span class="src-label" style="margin-left:6px"><span class="src-dot snap" id="hourlyDot"></span>FORECAST <span class="src-when" id="hourlyWhen"></span></span></span>
+    <div class="dur-bar" id="durHourly">
+      <button class="dur-btn active" data-h="24">24h</button>
+      <button class="dur-btn" data-h="48">48h</button>
+      <button class="dur-btn" data-h="72">72h</button>
+    </div>
+  </div>
+  <div class="legend" id="hourlyLegend">
+    <span><span class="lsw" style="background:var(--accent)"></span>PoP % (left)</span>
+    <span><span class="lsw" style="background:var(--freeze)"></span>Temp °F (right)</span>
+    <span><span style="display:inline-block;width:14px;height:0;border-top:1.5px dashed rgba(96,196,248,0.6);vertical-align:middle;margin-right:3px"></span>32°F freeze line</span>
+    <span id="hourlyWindowNote" style="color:var(--dim2)"></span>
+  </div>
+  <div class="chart-wrap" style="height:210px"><canvas id="cHourly"></canvas></div>
+  <div id="hourlyNote" style="font-size:10px;color:var(--dim);margin-top:5px"></div>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <div class="panel-title">
+      <span>NWS QPF · 6-hr buckets <span class="src-label" style="margin-left:6px"><span class="src-dot snap" id="qpfDot"></span>FORECAST</span></span>
+    </div>
+    <div class="legend" id="qpfLegend">
+      <span><span class="lbox" style="background:rgba(91,156,246,0.6)"></span>Rain (in liquid equiv)</span>
+      <span id="snowLegendItem" style="display:none"><span class="lbox" style="background:rgba(168,216,240,0.6)"></span>Snow (in)</span>
+    </div>
+    <div class="chart-wrap" style="height:165px"><canvas id="cQPF"></canvas><div class="chart-empty" id="cQPFEmpty" style="display:none">No precipitation forecast in window</div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-title">
+      <span>Temperature trajectory · 72h <span class="src-label" style="margin-left:6px"><span class="src-dot snap" id="tempTrajDot"></span>FORECAST</span></span>
+    </div>
+    <div class="chart-wrap" style="height:165px"><canvas id="cTemp"></canvas></div>
+  </div>
+</div>
+
+<!-- Lake long-range -->
+<div class="panel">
+  <div class="panel-title">
+    <span>Reeds Lake water temperature · long range <span class="src-label" style="margin-left:6px"><span class="src-dot live" id="lakeDot"></span>LIVE</span></span>
+    <div class="dur-bar" id="durLake">
+      <button class="dur-btn" data-h="168">7d</button>
+      <button class="dur-btn active" data-h="720">30d</button>
+      <button class="dur-btn" data-h="2160">90d</button>
+    </div>
+  </div>
+  <div class="legend">
+    <span><span class="lsw" style="background:var(--water)"></span>Daily avg °F</span>
+    <span><span class="lbox" style="background:rgba(125,211,252,0.2)"></span>Hi/Lo range</span>
+  </div>
+  <div class="chart-wrap" style="height:155px"><canvas id="cLake"></canvas></div>
+  <div id="lakeNote" style="font-size:10px;color:var(--dim);margin-top:5px">Lake temp builds over time — meaningful trends after 7+ days of capture.</div>
+</div>
+
+<!-- 7-day -->
+<div class="panel">
+  <div class="panel-title">
+    <span>7-day forecast · EGR <span style="font-size:10px;font-weight:400;color:var(--dim)" id="sevenDayNormal">NWS GRR</span> <span class="src-label" style="margin-left:6px"><span class="src-dot snap" id="dayStripDot"></span>FORECAST</span></span>
+  </div>
+  <div class="day-strip-wrap"><div class="day-strip" id="dayStrip"></div></div>
+</div>
+
+<!-- AFD -->
+<div class="panel" id="afdPanel">
+  <div class="panel-title">
+    <span>Area Forecast Discussion · NWS GRR <span style="font-size:10px;font-weight:400;color:var(--dim)" id="afdMeta"></span> <span class="src-label" style="margin-left:6px"><span class="src-dot snap" id="afdDot"></span>FORECAST</span></span>
+  </div>
+  <div id="afdContent"><div style="font-size:11px;color:var(--dim2)">Forecast data loading…</div></div>
+</div>
+
+<div class="footer">
+  EGR Weather Dashboard · NWS GRR · Reeds Lake Lakefront + EGRHS Memorial Field (Davis) · station capture every 5 min ·
+  <a href="https://jatesch26.github.io/egr-wx-dashboard" target="_blank">jatesch26.github.io/egr-wx-dashboard</a> ·
+  <a href="https://www.weatherlink.com/embeddablePage/show/725f11683b1e4c8fb534421299319c8c/summary" target="_blank">WeatherLink ↗</a>
+</div>
 </div>
 
 <script>
-var VERSION="4.19.2-2026-04-09";
-var PRESETS=[
-  {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
-  {label:"Chicago ORD",lat:41.9742,lon:-87.9073,role:"destination"},
-  {label:"Orlando MCO",lat:28.4312,lon:-81.3081,role:"destination"},
-  {label:"Manchester NH",lat:42.9328,lon:-71.4357,role:"destination"},
-  {label:"Phoenix AZ",lat:33.4373,lon:-112.0078,role:"destination"},
-];
-var ROLE_LABELS={home_base:"Home Base",destination:"Destination",connection:"Connection",run_location:"Run Location"};
-var ROLE_CLASSES={home_base:"role-home",destination:"role-dest",connection:"role-conn",run_location:"role-run"};
+// ════════════════════════════════════════════════════
+// CONSTANTS & STATE
+// ════════════════════════════════════════════════════
+const GRD='#252a3d', TF={size:10,family:"'JetBrains Mono',monospace"};
+Chart.defaults.color='#8b92ad';
+Chart.defaults.borderColor=GRD;
+Chart.defaults.font={size:10,family:"'JetBrains Mono',monospace"};
 
-var STATE={
-  nodes:[{id:"n0",label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base",
-    nws:null,uv:null,climate:null,gridpoint:null,aq:null,
-    ero:null,mpd:null,lsr:null,asosPrecip:null,hwo:null,ecmwf:null,ensemble:null,
-    errors:[],timeouts:[],status:"idle"}],
-  hourlyWindow:72,afdMode:"full",fetchTime:null,activeTab:"n0",nextId:1,
-  spcData:null,
-  extraProducts:{ero:false,mpd:false,lsr:false,asosPrecip:false,hwo:false,spc:false,aq:false},
-  omVars:{qpf:false,convective:false,bld:false,freezing:false},
-  omModels:{ecmwf:false,ensemble:false}
+const LIVE_STALE_MIN=10, LIVE_DEAD_MIN=30;
+const SNAP_STALE_H=6,    SNAP_CRIT_H=12;
+const BASEMENT_FLOOD_IN = 1.35;  // calibrated trigger from prior seepage event
+
+let hourly=[], sevenDay=[], qpfBuckets=[], snapMs=0, snapLabel='—';
+let forecastNode=null;
+
+// ════════════════════════════════════════════════════
+// UTILITIES
+// ════════════════════════════════════════════════════
+const fmtAgo = ms => {
+  const min=Math.round(ms/60000);
+  if(min<1) return 'just now';
+  if(min<60) return min+' min ago';
+  const h=Math.round(min/60);
+  if(h<24) return h+'h ago';
+  return Math.round(h/24)+'d ago';
 };
 
-var SECTION_STATE={};
-var SETTINGS_OPEN=false;
+function niceBounds(arr,padFrac=0.1,step=5,hardMin=null,hardMax=null){
+  const v=arr.filter(x=>x!=null&&!isNaN(x)&&isFinite(x));
+  if(!v.length) return null;
+  let lo=Math.min(...v),hi=Math.max(...v);
+  if(lo===hi){lo-=step;hi+=step;}
+  const pad=Math.max((hi-lo)*padFrac,step*0.5);
+  let outLo=Math.floor((lo-pad)/step)*step;
+  let outHi=Math.ceil((hi+pad)/step)*step;
+  if(hardMin!=null) outLo=Math.max(outLo,hardMin);
+  if(hardMax!=null) outHi=Math.min(outHi,hardMax);
+  return{min:outLo,max:outHi};
+}
 
-// ── PATCH 1: Bumped timeouts ──────────────────────────────────────────────────
-var T_NWS_PTS=16000,T_NWS_FC=15000,T_NWS_OBS=10000,T_NWS_AFD=12000,T_NWS_GRID=20000;
-var T_OM=12000,T_CLIMATE=20000,T_GEO=10000,T_EXTRA=12000;
+function skyToIcon(sky=''){
+  const s=sky.toLowerCase();
+  if(s.includes('thunder')) return '⛈️';
+  if(s.includes('snow')||s.includes('frost')) return '❄️';
+  if(s.includes('rain')||s.includes('shower')||s.includes('drizzle')) return '🌧️';
+  if(s.includes('fog')||s.includes('mist')) return '🌫️';
+  if(s.includes('mostly cloudy')||s.includes('overcast')) return '☁️';
+  if(s.includes('partly cloudy')||s.includes('partly sunny')||s.includes('mostly clear')) return '🌤️';
+  if(s.includes('sunny')||s.includes('clear')) return '☀️';
+  return '🌤️';
+}
 
-// ── PATCH 2: NWS /points cache (localStorage, 24h TTL) ───────────────────────
-function _nwsPtsKey(lat,lon){return 'nws_pts_'+lat.toFixed(4)+'_'+lon.toFixed(4);}
-function nwsPtsRead(lat,lon){
+function popType(sky='',temp=50){
+  const s=sky.toLowerCase();
+  if(temp<=32||s.includes('snow')||s.includes('frost')) return 'snow';
+  if(s.includes('rain')||s.includes('shower')||s.includes('thunder')) return 'rain';
+  return 'none';
+}
+
+function fmtIsoShort(iso){
+  if(!iso) return '—';
+  return new Date(iso).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'});
+}
+
+function escHtml(s){
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function compassFromDeg(deg){
+  if(deg==null) return '—';
+  const dirs=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  return dirs[Math.round(deg/22.5)%16];
+}
+
+// ════════════════════════════════════════════════════
+// STALENESS — applied immediately on load + every 60s
+// ════════════════════════════════════════════════════
+function applySnapshotAge(){
+  if(!snapMs) return;
+  const ageH=(Date.now()-snapMs)/3600000;
+  const whenStr=`· ${snapLabel} · ${fmtAgo(Date.now()-snapMs)}`;
+  const top=document.getElementById('snapAge');
+  top.classList.remove('stale','crit');
+  let dotCls='src-dot snap';
+  if(ageH>SNAP_CRIT_H){
+    top.classList.add('crit'); dotCls='src-dot snap-crit';
+    top.innerHTML=`<span class="${dotCls}" style="margin-right:6px"></span>NWS forecast ${Math.round(ageH)}h old · stale`;
+  } else if(ageH>SNAP_STALE_H){
+    top.classList.add('stale');
+    top.innerHTML=`<span class="${dotCls}" style="margin-right:6px"></span>NWS forecast ${Math.round(ageH)}h old`;
+  } else {
+    top.innerHTML=`<span class="${dotCls}" style="margin-right:6px"></span>NWS forecast · ${snapLabel}`;
+  }
+  const cls=ageH>SNAP_CRIT_H?'src-dot snap-crit':'src-dot snap';
+  ['hourlyDot','qpfDot','tempTrajDot','dayStripDot','afdDot','snapTonightDot','snapNextDot','nwsZoneDot']
+    .forEach(id=>{const el=document.getElementById(id);if(el)el.className=cls;});
+  ['hourlyWhen','snapTonightWhen','snapNextWhen','nwsZoneWhen']
+    .forEach(id=>{const el=document.getElementById(id);if(el)el.textContent=whenStr;});
+}
+
+function applyLiveAge(lastTs){
+  const ageMin=(Date.now()-lastTs.getTime())/60000;
+  let cls='src-dot live';
+  if(ageMin>LIVE_DEAD_MIN) cls='src-dot live-dead';
+  else if(ageMin>LIVE_STALE_MIN) cls='src-dot live-stale';
+  ['topLiveDot','stationDot','seriesDot','lakeDot','memDot']
+    .forEach(id=>{const el=document.getElementById(id);if(el)el.className=cls;});
+  const whenStr=fmtAgo(Date.now()-lastTs.getTime());
+  const el=document.getElementById('liveRateWhen');
+  if(el) el.textContent='Updated '+whenStr;
+  const lbl=document.getElementById('topLiveLabel');
+  if(lbl){
+    if(ageMin>LIVE_DEAD_MIN) lbl.textContent='STATION DEAD';
+    else if(ageMin>LIVE_STALE_MIN) lbl.textContent='STATION STALE';
+    else lbl.textContent='STATION LIVE';
+  }
+  // Update station time label
+  const st=document.getElementById('stationTime');
+  if(st&&lastTs){
+    const ts=lastTs.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})+
+             ' · '+lastTs.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    st.textContent=ts+' · '+whenStr;
+  }
+}
+
+// ════════════════════════════════════════════════════
+// FORECAST.JSON LOADER
+// ════════════════════════════════════════════════════
+async function loadForecast(){
   try{
-    var raw=localStorage.getItem(_nwsPtsKey(lat,lon));
-    if(!raw)return null;
-    var obj=JSON.parse(raw);
-    if(Date.now()-obj.ts>86400000){localStorage.removeItem(_nwsPtsKey(lat,lon));return null;}
-    return obj.data;
-  }catch(e){return null;}
-}
-function nwsPtsWrite(lat,lon,data){
-  try{localStorage.setItem(_nwsPtsKey(lat,lon),JSON.stringify({ts:Date.now(),data:data}));}
-  catch(e){}
-}
+    const r=await fetch('forecast.json',{cache:'no-store'});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data=await r.json();
+    const node=data.nodes&&data.nodes[0];
+    if(!node) throw new Error('No node data');
+    forecastNode=node;
 
-// ── PATCH 3: Retry wrapper — 1 retry after 2.5s on timeout ───────────────────
-function fetchWTRetry(url,opts,ms,delayMs){
-  return fetchWT(url,opts,ms).catch(function(e){
-    if(e.isTimeout){
-      return new Promise(function(res){setTimeout(res,delayMs||2500);})
-        .then(function(){return fetchWT(url,opts,ms);});
+    snapMs=new Date(data._generated).getTime();
+    snapLabel=new Date(data._generated).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'});
+
+    renderAlerts(node.alerts||[]);
+    renderNwsZone(node.current_observations);
+
+    const rawHourly=node.nws_hourly_forecast||[];
+    hourly=rawHourly.map(h=>({
+      iso:  h.time,
+      t:    fmtHourLabel(h.time),
+      temp: h.temp_f,
+      pop:  h.precip_pct||0,
+      sky:  h.sky||'',
+      precipType: precipTypeFromHour(h.temp_f, h.sky||''),
+    }));
+
+    const raw7day=node.nws_7day_forecast||[];
+    sevenDay=buildSevenDay(raw7day);
+    renderDayStrip();
+    qpfBuckets=buildQpfBuckets(node.nws_gridpoint_qpf);
+    snowQpfBuckets=buildSnowQpfBuckets(node.nws_gridpoint_qpf);
+
+    const normals=node.climate_normals;
+    if(normals&&normals.today_window){
+      const tw=normals.today_window;
+      document.getElementById('sevenDayNormal').textContent=
+        `NWS GRR · normal hi ${tw.normal_high_f}°F / lo ${tw.normal_low_f}°F`;
     }
-    throw e;
-  });
-}
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function ts(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true,timeZoneName:"short"});}
-function ago(iso){if(!iso)return"";var m=Math.round((Date.now()-new Date(iso))/60000);if(m<1)return"just now";if(m<60)return m+"m ago";if(m<1440)return Math.round(m/60)+"h ago";return Math.round(m/1440)+"d ago";}
-function compass(d){if(d==null)return"—";return["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(d/22.5)%16];}
-function cF(c){return c!=null?Math.round(c*9/5+32):null;}
-function mphv(m){return m!=null?Math.round(m*2.237):null;}
-function parseNWSWind(s){if(!s)return null;var m=s.match(/(\d+)/);return m?parseInt(m[1]):null;}
-function mMi(m){return m!=null?Math.round(m/1609.34*10)/10:null;}
-function inHg(p){return p!=null?Math.round(p/3386.39*100)/100:null;}
-function mmIn(v){return v!=null?Math.round(v/25.4*100)/100:null;}
-function mmInP(v){return v!=null?Math.round(v/25.4*1000)/1000:null;}
-function vv(x){return x!=null?x:"—";}
-function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML;}
-function pad2(n){return String(n).padStart(2,"0");}
-function fmtShortTime(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{hour:"numeric",minute:"2-digit",hour12:true});}
+    renderHeadlineCards(raw7day);
+    renderAfd(node.afd);
+    renderSnowPanel(node.nws_gridpoint_qpf, raw7day);
+    applySnapshotAge();
 
-function fetchWT(url,opts,ms){
-  var ctrl=new AbortController();
-  var timer=setTimeout(function(){ctrl.abort();},ms);
-  return fetch(url,Object.assign({},opts,{signal:ctrl.signal}))
-    .then(function(r){clearTimeout(timer);return r;})
-    .catch(function(e){clearTimeout(timer);if(e.name==="AbortError"){var err=new Error("Timeout "+ms/1000+"s");err.isTimeout=true;throw err;}throw e;});
-}
+    renderHourly(hourlyH);
+    renderQpf();
+    renderTempTrajectory();
 
-// ── Settings UI helpers ───────────────────────────────────────────────────────
-function toggleSettings(){
-  SETTINGS_OPEN=!SETTINGS_OPEN;
-  var panel=document.getElementById("settings-panel");
-  if(SETTINGS_OPEN){panel.classList.add("open");}else{panel.classList.remove("open");}
-  updateSettingsSummary();
-}
-function updateSettingsSummary(){
-  var el=document.getElementById("settings-summary");
-  if(!el)return;
-  var extras=[];
-  if(STATE.extraProducts.ero)extras.push("ERO");
-  if(STATE.extraProducts.mpd)extras.push("MPD");
-  if(STATE.extraProducts.lsr)extras.push("LSR");
-  if(STATE.extraProducts.asosPrecip)extras.push("ASOS");
-  if(STATE.extraProducts.hwo)extras.push("HWO");
-  if(STATE.extraProducts.spc)extras.push("SPC");
-  if(STATE.extraProducts.aq)extras.push("AQ");
-  if(STATE.omVars.qpf)extras.push("QPF");
-  if(STATE.omVars.convective)extras.push("CAPE");
-  if(STATE.omVars.bld)extras.push("BLD");
-  if(STATE.omVars.freezing)extras.push("Freeze");
-  if(STATE.omModels.ecmwf)extras.push("ECMWF");
-  if(STATE.omModels.ensemble)extras.push("Ens");
-  var n=STATE.nodes.length;
-  el.textContent=n+" node"+(n!==1?"s":"")+" · "+STATE.hourlyWindow+"h"+(extras.length?" · +"+extras.join(","):" · core only");
-}
-function toggleHint(id){
-  var el=document.getElementById(id);
-  if(el)el.classList.toggle("hint-open");
-}
-
-// ── Section collapse ──────────────────────────────────────────────────────────
-function toggleSection(id){
-  SECTION_STATE[id]=!SECTION_STATE[id];
-  var el=document.getElementById("cs-"+id);
-  if(el)el.classList.toggle("open");
-}
-function buildCollapsible(id,title,badgesHtml,summary,content){
-  var open=SECTION_STATE[id]||false;
-  return'<div class="csection'+(open?" open":"")+'" id="cs-'+id+'">'+
-    '<div class="csection-header" onclick="toggleSection(\''+id+'\')">'+
-    '<span class="csection-arrow">&#9654;</span>'+
-    '<span class="csection-title">'+title+'</span>'+
-    (badgesHtml?'<span class="csection-badges">'+badgesHtml+'</span>':'')+
-    (summary?'<span class="csection-summary">'+esc(summary)+'</span>':'')+
-    '</div>'+
-    '<div class="csection-body">'+content+'</div>'+
-    '</div>';
-}
-
-// ── Section summary generators ────────────────────────────────────────────────
-function chartsSummary(node){
-  var nws=node.nws;if(!nws||!nws.hourly||!nws.hourly.length)return"no data";
-  var hrs=Math.min(nws.hourly.length,STATE.hourlyWindow);
-  var temps=nws.hourly.slice(0,hrs).map(function(h){return h.temperature;});
-  var prec=nws.hourly.slice(0,hrs).map(function(h){return(h.probabilityOfPrecipitation&&h.probabilityOfPrecipitation.value)||0;});
-  var hi=Math.max.apply(null,temps),lo=Math.min.apply(null,temps),maxP=Math.max.apply(null,prec);
-  return STATE.hourlyWindow+"h · "+lo+"°–"+hi+"°F"+(maxP>0?" · precip peak "+maxP+"%":"");
-}
-function hourlySummary(node){
-  var nws=node.nws;if(!nws||!nws.hourly||!nws.hourly.length)return"no data";
-  var h0=nws.hourly[0];
-  var lows=nws.hourly.slice(0,18).map(function(h){return h.temperature;});
-  var lo=Math.min.apply(null,lows);
-  return"now "+h0.temperature+"°F · "+h0.shortForecast+(lo<h0.temperature?" · low "+lo+"°F":"");
-}
-function sevendaySummary(node){
-  var nws=node.nws;if(!nws||!nws.forecast||!nws.forecast.length)return"no data";
-  return nws.forecast.slice(0,4).map(function(p){return p.name+" "+p.temperature+"°";}).join(" · ");
-}
-function qpfSummary(node){
-  if(!node.gridpoint||!node.gridpoint.qpf_periods)return"no data";
-  var days={};
-  node.gridpoint.qpf_periods.forEach(function(p){var d=p.start.slice(0,10);days[d]=(days[d]||0)+(p.precip_in||0);});
-  var nonZero=Object.keys(days).sort().filter(function(d){return days[d]>0.005;});
-  if(!nonZero.length)return"no precip in forecast period";
-  return nonZero.slice(0,5).map(function(d){return d.slice(5)+": "+Math.round(days[d]*1000)/1000+'"';}).join(" · ");
-}
-function climateSummary(node){
-  if(!node.climate||!node.climate.months)return"no data";
-  var m=node.climate.months[new Date().getMonth()];
-  if(!m)return node.climate.period;
-  return m.month_name+": "+m.normal_high_f+"°/"+m.normal_low_f+"°F · "+m.normal_precip_in+'" avg precip';
-}
-
-// ── Scroll to sources ─────────────────────────────────────────────────────────
-function scrollToSources(){
-  var el=document.getElementById("sources-block-"+STATE.activeTab);
-  if(el)el.scrollIntoView({behavior:"smooth",block:"start"});
-}
-
-// ── Sticky bar update ─────────────────────────────────────────────────────────
-function updateStickyBar(){
-  var node=null;
-  for(var i=0;i<STATE.nodes.length;i++){if(STATE.nodes[i].id===STATE.activeTab){node=STATE.nodes[i];break;}}
-  var isLoading=STATE.nodes.some(function(n){return n.status==="loading";});
-  var rdy=STATE.nodes.filter(function(n){return n.status==="ready";}).length;
-  var statusEl=document.getElementById("sticky-status");
-  if(statusEl)statusEl.textContent=rdy+"/"+STATE.nodes.length+" ready";
-  var fb=document.getElementById("sticky-fetch-btn"),ab=document.getElementById("sticky-apply-btn");
-  if(fb){fb.disabled=isLoading;fb.textContent=isLoading?"…":"↻ Fetch All";}
-  if(ab){ab.disabled=isLoading;}
-  var dotsEl=document.getElementById("sticky-dots");
-  if(!dotsEl)return;
-  if(!node){dotsEl.innerHTML='<span class="sdot"><span class="dot dot-off"></span>—</span>';return;}
-  var nws=node.nws,pend=(node.status==="loading");
-  var dotDefs=[
-    {label:"OBS",ok:nws&&!!nws.observation,to:nws&&nws.obsTimedOut,pend:pend&&!nws},
-    {label:"HRLY",ok:nws&&nws.hourly&&nws.hourly.length>0,to:false,pend:pend&&!nws},
-    {label:"QPF",ok:!!node.gridpoint,to:false,pend:pend&&!node.gridpoint},
-    {label:"OM",ok:!!node.uv,to:false,pend:pend&&!node.uv},
-    {label:"ERA5",ok:!!node.climate,to:false,pend:pend&&!node.climate},
-  ];
-  if(STATE.extraProducts.aq)dotDefs.push({label:"AQ",ok:!!node.aq,to:false,pend:pend&&!node.aq});
-  if(STATE.extraProducts.spc)dotDefs.push({label:"SPC",ok:!!(STATE.spcData&&STATE.spcData.day1),to:false,pend:pend});
-  if(STATE.omModels.ecmwf)dotDefs.push({label:"ECMWF",ok:!!node.ecmwf,to:false,pend:pend&&!node.ecmwf});
-  if(STATE.omModels.ensemble)dotDefs.push({label:"ENS",ok:!!node.ensemble,to:false,pend:pend&&!node.ensemble});
-  dotsEl.innerHTML=dotDefs.map(function(d){
-    var color=d.ok?"var(--success)":d.to?"var(--orange)":d.pend?"var(--border)":"var(--danger)";
-    return'<span class="sdot"><span class="dot" style="background:'+color+'"></span>'+d.label+'</span>';
-  }).join("");
-}
-
-// ── Enhanced Sources Block ────────────────────────────────────────────────────
-function srcRowD(ok,to,pend,label,detail){
-  var c=ok?"dot-ok":to?"dot-timeout":pend?"dot-pend":"dot-fail";
-  return'<div class="source-row"><span class="dot '+c+'" style="margin-top:3px"></span><span class="source-label">'+label+'</span><span class="src-detail">'+detail+'</span></div>';
-}
-
-function buildSourcesHTML(node){
-  var nws=node.nws,uv=node.uv,obs=nws?nws.observation:null;
-  var pend=(node.status==="loading");
-  var html='<div class="sources-block" id="sources-block-'+node.id+'">';
-  html+='<h2>Sources &mdash; '+esc(node.label)+'</h2>';
-  html+='<div class="src-group-label">Core NWS</div>';
-  var obsDetail,obsOk=obs&&!!obs;
-  if(obs){
-    var obsT=cF(obs.temperature?obs.temperature.value:null);
-    var obsSky=obs.textDescription||"";
-    var obsStn=nws.stationId||"";
-    obsDetail='<span class="src-hi">'+ts(obs.timestamp)+'</span> · '+ago(obs.timestamp)+(obsStn?' · '+esc(obsStn):'')+' · '+esc(obsSky)+(obsT!==null?' · '+obsT+'°F':'');
-  } else { obsDetail=nws&&nws.obsTimedOut?"<span style='color:var(--orange)'>timed out</span>":(pend?"loading…":"unavailable"); }
-  html+=srcRowD(obsOk,nws&&nws.obsTimedOut,pend&&!obsOk,"Observations",obsDetail);
-  var hrOk=nws&&nws.hourly&&nws.hourly.length>0,hrDetail;
-  if(hrOk){hrDetail='<span class="src-hi">'+ts(nws.hourlyUpdated)+'</span> · '+ago(nws.hourlyUpdated)+' · '+nws.hourly.length+' periods';}
-  else{hrDetail=pend?"loading…":"unavailable";}
-  html+=srcRowD(hrOk,false,pend&&!hrOk,"Hourly Forecast",hrDetail);
-  var fcOk=nws&&nws.forecast&&nws.forecast.length>0,fcDetail;
-  if(fcOk){fcDetail='<span class="src-hi">'+ts(nws.forecastUpdated)+'</span> · '+ago(nws.forecastUpdated)+' · '+nws.forecast.length+' periods';}
-  else{fcDetail=pend?"loading…":"unavailable";}
-  html+=srcRowD(fcOk,false,pend&&!fcOk,"7-Day Forecast",fcDetail);
-  var afdOk=nws&&!!nws.afd,afdDetail;
-  if(afdOk){afdDetail='<span class="src-hi">'+ts(nws.afdTime)+'</span> · '+ago(nws.afdTime)+' · '+(nws.office||"");}
-  else{afdDetail=nws&&nws.afdTimedOut?"<span style='color:var(--orange)'>timed out</span>":pend?"loading…":"unavailable";}
-  html+=srcRowD(afdOk,nws&&nws.afdTimedOut,pend&&!afdOk,"AFD",afdDetail);
-  var qpfOk=!!node.gridpoint,qpfDetail;
-  if(qpfOk){qpfDetail='<span class="src-hi">just fetched</span> · '+node.gridpoint.qpf_periods.length+' periods · '+esc(node.gridpoint.source);}
-  else{qpfDetail=nws?(pend?"loading…":"unavailable or error"):"NWS required for QPF";}
-  html+=srcRowD(qpfOk,false,pend&&!qpfOk,"NWS Gridpoint QPF",qpfDetail);
-  html+='<div class="src-group-label">Model Data</div>';
-  var omVarL=[];
-  if(STATE.omVars.qpf)omVarL.push("QPF");if(STATE.omVars.convective)omVarL.push("CAPE/LI/CIN");
-  if(STATE.omVars.bld)omVarL.push("BLD");if(STATE.omVars.freezing)omVarL.push("Freezing");
-  var omOk=!!uv,omDetail;
-  if(omOk){omDetail='<span class="src-hi">just fetched</span> · hourly+daily · core: temp, UV, wind, humidity, clouds'+(omVarL.length?" · +"+omVarL.join(", "):"");}
-  else{omDetail=pend?"loading…":"unavailable";}
-  html+=srcRowD(omOk,false,pend&&!omOk,"Open-Meteo Forecast",omDetail);
-  var eraOk=!!node.climate,eraDetail;
-  if(eraOk){eraDetail='<span class="src-hi">ERA5 2015–2024</span> · '+esc(node.climate.station_name||"")+(node.climate.today_window?" · today window n="+node.climate.today_window.sample_size+" (±3d)":"");}
-  else{eraDetail=pend?"loading…":"unavailable";}
-  html+=srcRowD(eraOk,false,pend&&!eraOk,"ERA5 Climate Normals",eraDetail);
-  var optDefs=[
-    {key:"aq",label:"Air Quality",data:node.aq,enabled:STATE.extraProducts.aq,detail:node.aq&&node.aq.current?'<span class="src-hi">AQI '+node.aq.current.us_aqi+'</span> · 3-day hourly available':null},
-    {key:"spc",label:"SPC Day 1/2",data:STATE.spcData&&STATE.spcData.day1,enabled:STATE.extraProducts.spc,detail:STATE.spcData&&STATE.spcData.day1?'<span class="src-hi">Max risk: '+(STATE.spcData.day1.max_risk||"TSTM")+'</span> · '+ago(STATE.spcData.day1.issued):null},
-    {key:"ero",label:"WPC ERO",data:node.ero,enabled:STATE.extraProducts.ero,detail:node.ero?'<span class="src-hi">'+(node.ero.risks.length?node.ero.risks.join(", "):"No risk areas")+'</span> · '+ago(node.ero.issued):null},
-    {key:"mpd",label:"WPC MPD",data:node.mpd,enabled:STATE.extraProducts.mpd,detail:node.mpd?'<span class="src-hi">'+(node.mpd.length?node.mpd.length+" discussion(s)":"No active discussions")+'</span>'+(node.mpd.length?' · '+ago(node.mpd[0].issued):""):null},
-    {key:"hwo",label:"HWO",data:node.hwo,enabled:STATE.extraProducts.hwo,detail:node.hwo?'<span class="src-hi">'+ts(node.hwo.issued)+'</span> · '+ago(node.hwo.issued)+' · '+(node.hwo.office||""):null},
-    {key:"lsr",label:"LSR — "+((nws&&nws.office)||"?"),data:node.lsr,enabled:STATE.extraProducts.lsr,detail:node.lsr?'<span class="src-hi">'+ts(node.lsr.issued)+'</span> · '+ago(node.lsr.issued):null},
-    {key:"asosPrecip",label:"ASOS Precip",data:node.asosPrecip,enabled:STATE.extraProducts.asosPrecip,detail:node.asosPrecip?'<span class="src-hi">'+node.asosPrecip.observations.length+' obs</span> · '+esc(node.asosPrecip.station):null},
-    {key:"ecmwf",label:"ECMWF IFS",data:node.ecmwf,enabled:STATE.omModels.ecmwf,detail:node.ecmwf?'<span class="src-hi">just fetched</span> · 9km · 10-day · precip de-duped (Bug 1)':null},
-    {key:"ensemble",label:"Ensemble Spread",data:node.ensemble,enabled:STATE.omModels.ensemble,detail:node.ensemble?'<span class="src-hi">'+node.ensemble.member_count+' members</span> (ICON EPS) · p10/median/p90':null},
-  ];
-  var enabledOpts=optDefs.filter(function(o){return o.enabled;});
-  var disabledOpts=optDefs.filter(function(o){return!o.enabled;});
-  if(enabledOpts.length||disabledOpts.length){
-    html+='<div class="src-group-label">Opt-In</div>';
-    enabledOpts.forEach(function(o){
-      var det=o.data?(o.detail||"ok"):"<span style='color:var(--danger)'>unavailable</span>";
-      html+=srcRowD(!!o.data,false,pend&&!o.data,o.label,det);
-    });
-    if(disabledOpts.length){
-      html+='<div class="src-group-disabled">Not enabled: '+disabledOpts.map(function(o){return o.label;}).join(" · ")+'</div>';
-    }
+  }catch(e){
+    console.warn('forecast.json:',e);
+    document.getElementById('snapAge').innerHTML=
+      '<span class="src-dot snap-crit" style="margin-right:6px"></span>Forecast unavailable · '+e.message;
   }
-  html+='<div class="sfooter">NWS api.weather.gov · Gridpoint /gridpoints/{cwa}/{x},{y} · OM api.open-meteo.com · AQ air-quality-api.open-meteo.com · ECMWF api.open-meteo.com/v1/ecmwf · Ensemble ensemble-api.open-meteo.com · Climate archive-api.open-meteo.com (ERA5 2015–2024)</div>';
-  html+='</div>';
-  return html;
 }
 
-// ── Charts ────────────────────────────────────────────────────────────────────
-function spark(values,opts){
-  var w=opts.w||340,h=opts.h||80,color=opts.color||"var(--accent)",fill=opts.fill||false,unit=opts.unit||"";
-  var nums=values.map(function(v){return typeof v==="number"?v:null;});
-  var valid=nums.filter(function(v){return v!==null;});
-  if(valid.length<2)return'<div style="color:var(--dim);font-size:11px;font-family:var(--mono);padding:8px">No data</div>';
-  var mn=Math.min.apply(null,valid),mx=Math.max.apply(null,valid);
-  if(mn===mx){mn-=1;mx+=1;}
-  var pad=8,pw=w-pad*2,ph=h-pad*2;
-  var pts=[];
-  for(var i=0;i<nums.length;i++){if(nums[i]===null)continue;var x=pad+(i/(nums.length-1))*pw;var y=pad+ph-(((nums[i]-mn)/(mx-mn))*ph);pts.push(x.toFixed(1)+","+y.toFixed(1));}
-  var s='<svg viewBox="0 0 '+w+' '+h+'" width="100%" height="'+h+'" xmlns="http://www.w3.org/2000/svg" style="display:block">';
-  s+='<text x="'+pad+'" y="'+(pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mx)+unit+'</text>';
-  s+='<text x="'+pad+'" y="'+(h-2)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mn)+unit+'</text>';
-  s+='<line x1="'+pad+'" y1="'+pad+'" x2="'+(w-pad)+'" y2="'+pad+'" stroke="var(--border)" stroke-width="0.5"/>';
-  s+='<line x1="'+pad+'" y1="'+(h-pad)+'" x2="'+(w-pad)+'" y2="'+(h-pad)+'" stroke="var(--border)" stroke-width="0.5"/>';
-  if(fill){var fp=pts[0].split(",")[0]+","+(h-pad)+" "+pts.join(" ")+" "+pts[pts.length-1].split(",")[0]+","+(h-pad);s+='<polygon points="'+fp+'" fill="'+color+'" opacity="0.15"/>';}
-  s+='<polyline points="'+pts.join(" ")+'" fill="none" stroke="'+color+'" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
-  s+='</svg>';
-  return s;
-}
-function barChart(labels,highs,lows){
-  var w=400,h=120,pad=30,bw=20,gap=8;
-  var all=highs.concat(lows).filter(function(v){return v!=null;});
-  if(all.length<2)return"";
-  var mn=Math.min.apply(null,all)-5,mx=Math.max.apply(null,all)+5,ph=h-pad*2;
-  var tw=Math.max(w,labels.length*(bw+gap)+pad*2);
-  var s='<svg viewBox="0 0 '+tw+' '+h+'" width="100%" height="'+h+'" xmlns="http://www.w3.org/2000/svg" style="display:block">';
-  s+='<text x="2" y="'+(pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mx)+'°</text>';
-  s+='<text x="2" y="'+(h-pad+4)+'" fill="var(--dim)" font-size="9" font-family="var(--mono)">'+Math.round(mn)+'°</text>';
-  for(var i=0;i<labels.length;i++){
-    var x=pad+i*(bw+gap)+bw/2,hi=highs[i],lo=lows[i];
-    if(hi!=null&&lo!=null){
-      var y1=pad+ph-((hi-mn)/(mx-mn))*ph,y2=pad+ph-((lo-mn)/(mx-mn))*ph;
-      s+='<line x1="'+x+'" y1="'+y1+'" x2="'+x+'" y2="'+y2+'" stroke="var(--accent)" stroke-width="'+(bw/3)+'" stroke-linecap="round" opacity="0.6"/>';
-      s+='<circle cx="'+x+'" cy="'+y1+'" r="4" fill="var(--danger)"/>';
-      s+='<circle cx="'+x+'" cy="'+y2+'" r="4" fill="var(--accent)"/>';
-      s+='<text x="'+x+'" y="'+(y1-6)+'" fill="var(--danger)" font-size="9" font-family="var(--mono)" text-anchor="middle">'+hi+'°</text>';
-      s+='<text x="'+x+'" y="'+(y2+14)+'" fill="var(--accent)" font-size="9" font-family="var(--mono)" text-anchor="middle">'+lo+'°</text>';
-    }
-    s+='<text x="'+x+'" y="'+(h-4)+'" fill="var(--dim)" font-size="8" font-family="var(--mono)" text-anchor="middle">'+esc(labels[i].slice(0,3))+'</text>';
+// ── Hour label: show day name at midnight, show "NOW" for current hour ──
+function fmtHourLabel(iso){
+  if(!iso) return '';
+  const d=new Date(iso);
+  const h=d.getHours();
+  if(h===0){
+    return d.toLocaleDateString('en-US',{weekday:'short'}).toUpperCase();
   }
-  s+='</svg>';
-  return s;
+  const ampm=h>=12?'p':'a';
+  const h12=h%12||12;
+  return `${h12}${ampm}`;
 }
 
-// ── NWS wrappers — nwsGet uses fetchWTRetry (PATCH 3) ────────────────────────
-function nwsGet(url,ms){
-  return fetchWTRetry(url,{headers:{"User-Agent":"(WeatherStation,contact@example.com)","Accept":"application/geo+json"},cache:"no-store"},ms||T_NWS_FC,2500)
-    .then(function(r){if(!r.ok)throw new Error("NWS "+r.status);return r.json();});
+// ── For 48h/72h: return label with day context where useful ──
+function fmtHourLabelLong(iso){
+  if(!iso) return '';
+  const d=new Date(iso);
+  const h=d.getHours();
+  if(h===0||h===6||h===12||h===18){
+    const day=d.toLocaleDateString('en-US',{weekday:'short'});
+    const ampm=h>=12?'p':'a';
+    const h12=h%12||12;
+    return h===0 ? day : `${day} ${h12}${ampm}`;
+  }
+  return '';
 }
 
-// ── fetchNodeNWS — uses /points cache (PATCH 2) ───────────────────────────────
-function fetchNodeNWS(lat,lon){
-  var cached=nwsPtsRead(lat,lon);
-  var ptsP=cached
-    ? Promise.resolve(cached)
-    : nwsGet("https://api.weather.gov/points/"+lat+","+lon,T_NWS_PTS)
-        .then(function(pts){nwsPtsWrite(lat,lon,pts);return pts;});
-
-  return ptsP.then(function(pts){
-      var p=pts.properties;
-      return Promise.all([nwsGet(p.forecast),nwsGet(p.forecastHourly),nwsGet(p.observationStations),nwsGet("https://api.weather.gov/alerts/active?point="+lat+","+lon)])
-        .then(function(res){
-          var fc=res[0],hr=res[1],stns=res[2],alrt=res[3];
-          var stId=stns.features&&stns.features[0]?stns.features[0].properties.stationIdentifier:null;
-          var result={office:p.gridId,stationId:stId,gridId:p.gridId,gridX:p.gridX,gridY:p.gridY,forecast:fc.properties.periods||[],hourly:hr.properties.periods||[],observation:null,alerts:alrt.features||[],afd:null,afdTime:null,forecastUpdated:fc.properties.updateTime,hourlyUpdated:hr.properties.updateTime,obsTimedOut:false,afdTimedOut:false};
-          var obsP=stId?nwsGet("https://api.weather.gov/stations/"+stId+"/observations/latest",T_NWS_OBS).then(function(o){result.observation=o.properties;}).catch(function(e){if(e.isTimeout)result.obsTimedOut=true;}):Promise.resolve();
-          var afdP=nwsGet("https://api.weather.gov/products/types/AFD/locations/"+p.gridId,T_NWS_AFD).then(function(al){var id=al["@graph"]&&al["@graph"][0]?al["@graph"][0].id:null;if(!id)return;return nwsGet("https://api.weather.gov/products/"+id,T_NWS_AFD).then(function(a){result.afd=a.productText;result.afdTime=a.issuanceTime;});}).catch(function(e){if(e.isTimeout)result.afdTimedOut=true;});
-          return Promise.all([obsP,afdP]).then(function(){return result;});
-        });
-    });
+// ── Precip type classification ──
+function precipTypeFromHour(temp, sky){
+  const s=(sky||'').toLowerCase();
+  if(s.includes('thunder')) return 'thunder';
+  if(temp<=28) return 'snow';
+  if(temp<=32) return (s.includes('rain')||s.includes('shower'))?'ice':'snow';
+  if(temp<=35&&(s.includes('rain')||s.includes('shower'))) return 'mix'; // freezing rain risk
+  if(s.includes('snow')||s.includes('frost')) return temp<=32?'snow':'mix';
+  return 'rain';
 }
 
-function fetchNodeGridpoint(gridId,gridX,gridY){
-  return nwsGet("https://api.weather.gov/gridpoints/"+gridId+"/"+gridX+","+gridY,T_NWS_GRID)
-    .then(function(data){
-      var props=data.properties;
-      function parseFld(field){if(!field||!field.values)return[];return field.values.filter(function(v){return v.value!=null;}).map(function(v){var parts=v.validTime.split("/"),m=parts[1]&&parts[1].match(/PT(\d+)H/);return{start:parts[0],hours:m?parseInt(m[1]):1,value:v.value};});}
-      function toIn(mm){return mm!=null?Math.round(mm/25.4*1000)/1000:null;}
-      function toDailyIn(periods){var days={};periods.forEach(function(p){var t0=new Date(p.start),rph=p.value/p.hours;for(var h=0;h<p.hours;h++){var k=new Date(t0.getTime()+h*3600000).toISOString().slice(0,10);days[k]=(days[k]||0)+rph;}});return Object.keys(days).sort().map(function(k){return{date:k,precip_in:toIn(days[k])};});}
-      var qpf=parseFld(props.quantitativePrecipitation),thunder=parseFld(props.probabilityOfThunder),snow=parseFld(props.snowfallAmount),ice=parseFld(props.iceAccumulation);
-      return{source:"NWS Gridpoint "+gridId+" "+gridX+","+gridY,qpf_periods:qpf.map(function(p){return{start:p.start,hours:p.hours,precip_in:toIn(p.value)};}),qpf_daily_utc:toDailyIn(qpf),thunder_prob:thunder.filter(function(p){return p.value>0;}).map(function(p){return{start:p.start,hours:p.hours,prob_pct:Math.round(p.value)};}),snowfall_periods:snow.filter(function(p){return p.value>0;}).map(function(p){return{start:p.start,hours:p.hours,snow_in:toIn(p.value)};}),ice_periods:ice.filter(function(p){return p.value>0;}).map(function(p){return{start:p.start,hours:p.hours,ice_in:toIn(p.value)};})};
-    });
+// ── Alert styling — enhanced for winter events ──
+function alertClass(a){
+  const ev=(a.event||'').toLowerCase();
+  if(ev.includes('tornado')) return 'alert-tornado';
+  if(ev.includes('severe thunderstorm')) return 'alert-severe-tstorm';
+  if(ev.includes('flash flood')) return 'alert-flashflood';
+  if(ev.includes('flood')) return 'alert-flood';
+  if(ev.includes('high wind')||ev.includes('wind advisory')) return 'alert-highwind';
+  if(ev.includes('excessive heat')||ev.includes('heat advisory')) return 'alert-heat';
+  if(ev.includes('dense fog')||ev.includes('fog advisory')) return 'alert-fog';
+  if(ev.includes('air quality')) return 'alert-aqi';
+  if(ev.includes('special weather')) return 'alert-special';
+  if(ev.includes('blizzard')||ev.includes('winter storm')) return 'alert-winter';
+  if(ev.includes('ice storm')||ev.includes('freezing rain')||ev.includes('sleet')) return 'alert-ice';
+  if(ev.includes('freeze')||ev.includes('frost')||ev.includes('snow')||ev.includes('winter weather')) return 'alert-snow';
+  const sev=(a.severity||'').toLowerCase();
+  if(sev==='extreme'||sev==='severe') return 'alert-danger';
+  return 'alert-warn';
 }
-function fetchHWO(officeId){return nwsGet("https://api.weather.gov/products/types/HWO/locations/"+officeId,T_EXTRA).then(function(list){var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;if(!id)return null;return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA).then(function(p){return{text:p.productText,issued:p.issuanceTime,office:officeId};});});}
-function fetchSPCDay(type){return nwsGet("https://api.weather.gov/products/types/"+type,T_EXTRA).then(function(list){var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;if(!id)return null;return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA).then(function(p){var text=p.productText||"",risks=[],re=/(HIGH|MDT|ENH|SLGT|MRGL|TSTM)\s+RISK/gi,m;while((m=re.exec(text))!==null){var r=m[1].toUpperCase();if(risks.indexOf(r)===-1)risks.push(r);}var ord={HIGH:6,MDT:5,ENH:4,SLGT:3,MRGL:2,TSTM:1};risks.sort(function(a,b){return(ord[b]||0)-(ord[a]||0);});return{type:type,text:text,issued:p.issuanceTime,risks:risks,max_risk:risks[0]||"TSTM"};});});}
-function fetchNodeAQ(lat,lon){var params=new URLSearchParams({latitude:lat,longitude:lon,hourly:"us_aqi,pm2_5,pm10,ozone,nitrogen_dioxide,dust,uv_index",current:"us_aqi,pm2_5,pm10,ozone,dust",timezone:"auto",forecast_days:"3"});return fetchWT("https://air-quality-api.open-meteo.com/v1/air-quality?"+params,{cache:"no-store"},T_OM).then(function(r){if(!r.ok)throw new Error("AQ "+r.status);return r.json();});}
-function fetchNodeUV(lat,lon){
-  var hv="uv_index,uv_index_clear_sky,temperature_2m,apparent_temperature,relative_humidity_2m,dew_point_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,weather_code";
-  if(STATE.omVars.qpf)hv+=",precipitation,rain,showers,snowfall";
-  if(STATE.omVars.convective)hv+=",cape,lifted_index,convective_inhibition";
-  if(STATE.omVars.bld)hv+=",boundary_layer_height";
-  if(STATE.omVars.freezing)hv+=",freezing_level_height,snowfall_height";
-  var dv="sunrise,sunset,precipitation_sum,snowfall_sum,wind_speed_10m_max,uv_index_max,apparent_temperature_max,apparent_temperature_min,precipitation_probability_max,wind_direction_10m_dominant,shortwave_radiation_sum";
-  var params=new URLSearchParams({latitude:lat,longitude:lon,hourly:hv,daily:dv,temperature_unit:"fahrenheit",wind_speed_unit:"mph",precipitation_unit:"inch",timezone:"auto",forecast_days:String(Math.max(7,Math.ceil(STATE.hourlyWindow/24)+1))});
-  return fetchWT("https://api.open-meteo.com/v1/forecast?"+params,{cache:"no-store"},T_OM).then(function(r){if(!r.ok)throw new Error("OM "+r.status);return r.json();});
+
+function alertIcon(a){
+  const ev=(a.event||'').toLowerCase();
+  if(ev.includes('tornado')) return '🌪️';
+  if(ev.includes('severe thunderstorm')) return '⛈️';
+  if(ev.includes('flash flood')) return '🌊';
+  if(ev.includes('flood')) return '💧';
+  if(ev.includes('high wind')||ev.includes('wind advisory')) return '💨';
+  if(ev.includes('excessive heat')||ev.includes('heat advisory')) return '🌡️';
+  if(ev.includes('dense fog')||ev.includes('fog advisory')) return '🌫️';
+  if(ev.includes('air quality')) return '😮‍💨';
+  if(ev.includes('special weather')) return '📢';
+  if(ev.includes('blizzard')) return '🌨️';
+  if(ev.includes('winter storm')) return '❄️';
+  if(ev.includes('ice storm')||ev.includes('freezing rain')) return '🧊';
+  if(ev.includes('freeze')||ev.includes('frost')) return '❄️';
+  if(ev.includes('snow')) return '🌨️';
+  const sev=(a.severity||'').toLowerCase();
+  if(sev==='extreme'||sev==='severe') return '⚠️';
+  return '⚡';
 }
-function fetchNodeECMWF(lat,lon){var params=new URLSearchParams({latitude:lat,longitude:lon,hourly:"temperature_2m,precipitation,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,cape",temperature_unit:"fahrenheit",wind_speed_unit:"mph",precipitation_unit:"inch",timezone:"auto",forecast_days:"10"});return fetchWT("https://api.open-meteo.com/v1/ecmwf?"+params,{cache:"no-store"},T_OM).then(function(r){if(!r.ok)throw new Error("ECMWF "+r.status);return r.json();});}
-function fetchNodeEnsemble(lat,lon){var params=new URLSearchParams({latitude:lat,longitude:lon,hourly:"temperature_2m,precipitation",models:"icon_seamless",temperature_unit:"fahrenheit",precipitation_unit:"inch",timezone:"auto",forecast_days:"7"});return fetchWT("https://ensemble-api.open-meteo.com/v1/ensemble?"+params,{cache:"no-store"},T_OM).then(function(r){if(!r.ok)throw new Error("Ens "+r.status);return r.json();}).then(function(d){if(!d.hourly)return null;var h=d.hourly,times=h.time||[];function getM(prefix){var m=[];for(var k in h){if(k.indexOf(prefix+"_member")===0)m.push(h[k]);}return m;}function pct(arr,p){var s=arr.slice().sort(function(a,b){return a-b;});return s[Math.floor(s.length*p)]||null;}function spread(prefix){var members=getM(prefix);if(!members.length)return null;var p10=[],med=[],p90=[];for(var i=0;i<times.length;i++){var vals=members.map(function(m){return m[i];}).filter(function(v){return v!=null;});if(!vals.length){p10.push(null);med.push(null);p90.push(null);continue;}p10.push(Math.round(pct(vals,0.1)*10)/10);med.push(Math.round(pct(vals,0.5)*10)/10);p90.push(Math.round(pct(vals,0.9)*10)/10);}return{p10:p10,median:med,p90:p90};}return{model:"icon_seamless",time:times,member_count:getM("temperature_2m").length,temperature_2m:spread("temperature_2m"),precipitation:spread("precipitation")};});}
-function fetchNodeClimate(lat,lon){var params=new URLSearchParams({latitude:lat,longitude:lon,start_date:"2015-01-01",end_date:"2024-12-31",daily:"temperature_2m_max,temperature_2m_min,precipitation_sum",temperature_unit:"fahrenheit",precipitation_unit:"inch",timezone:"auto"});return fetchWT("https://archive-api.open-meteo.com/v1/archive?"+params,{cache:"no-store"},T_CLIMATE).then(function(r){if(!r.ok)throw new Error("Archive "+r.status);return r.json();}).then(function(d){if(!d.daily||!d.daily.time||!d.daily.time.length)return null;var times=d.daily.time,tmx=d.daily.temperature_2m_max,tmn=d.daily.temperature_2m_min,pr=d.daily.precipitation_sum;var MABBR=["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];var MNAME=["","January","February","March","April","May","June","July","August","September","October","November","December"];function avg(arr){var v=arr.filter(function(x){return x!=null;});if(!v.length)return null;return Math.round(v.reduce(function(a,b){return a+b;},0)/v.length*10)/10;}function r2(v){return v!=null?Math.round(v*100)/100:null;}var byM={},mprecip={};for(var m=1;m<=12;m++)byM[m]={hi:[],lo:[]};for(var i=0;i<times.length;i++){var mo=parseInt(times[i].slice(5,7)),yr=times[i].slice(0,4);if(tmx[i]!=null)byM[mo].hi.push(tmx[i]);if(tmn[i]!=null)byM[mo].lo.push(tmn[i]);var mk=yr+"-"+mo;if(!mprecip[mk])mprecip[mk]={m:mo,t:0};if(pr[i]!=null)mprecip[mk].t+=pr[i];}var mps={};for(var k in mprecip){var e=mprecip[k];if(!mps[e.m])mps[e.m]=[];mps[e.m].push(e.t);}var months=[];for(var m=1;m<=12;m++){var mp=mps[m]||[];var ap=mp.length?r2(mp.reduce(function(a,b){return a+b;},0)/mp.length):null;months.push({month:m,month_abbr:MABBR[m],month_name:MNAME[m],normal_high_f:avg(byM[m].hi),normal_low_f:avg(byM[m].lo),normal_precip_in:ap});}var now=new Date(),todayMo=now.getMonth()+1,todayDa=now.getDate();var winSet={};for(var offset=-3;offset<=3;offset++){var probe=new Date(2024,todayMo-1,todayDa+offset);winSet[probe.getMonth()*100+probe.getDate()]=true;}var whi=[],wlo=[],wpr=[];for(var i=0;i<times.length;i++){var mo2=parseInt(times[i].slice(5,7)),da=parseInt(times[i].slice(8,10));if(winSet[mo2*100+da]){if(tmx[i]!=null)whi.push(tmx[i]);if(tmn[i]!=null)wlo.push(tmn[i]);if(pr[i]!=null)wpr.push(pr[i]);}}var todayWindow=whi.length>=5?{sample_size:whi.length,normal_high_f:avg(whi),normal_low_f:avg(wlo),avg_daily_precip_in:avg(wpr)}:null;return{period:"ERA5 2015–2024",source:"Open-Meteo Historical Archive (ERA5 reanalysis)",station_name:"ERA5 grid "+d.latitude.toFixed(2)+"°N "+Math.abs(d.longitude).toFixed(2)+"°"+(d.longitude<0?"W":"E"),current_month_index:todayMo,months:months,today_window:todayWindow};}).catch(function(e){console.log("[WS] Climate:",e.message);return null;});}
-function fetchERO(){return nwsGet("https://api.weather.gov/products/types/ERO/locations/WPC",T_EXTRA).then(function(list){var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;if(!id)return null;return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA).then(function(p){var text=p.productText||"",risks=[],re=/(HIGH|ENHANCED|SLIGHT|MARGINAL)\s+RISK/gi,m;while((m=re.exec(text))!==null){var r=m[1].toUpperCase();if(risks.indexOf(r)===-1)risks.push(r);}var ord={HIGH:4,ENHANCED:3,SLIGHT:2,MARGINAL:1};risks.sort(function(a,b){return(ord[b]||0)-(ord[a]||0);});return{text:text,issued:p.issuanceTime,risks:risks};});});}
-function fetchMPD(){return nwsGet("https://api.weather.gov/products/types/MPD/locations/WPC",T_EXTRA).then(function(list){var items=(list["@graph"]||[]).slice(0,3);if(!items.length)return[];return Promise.all(items.map(function(item){return nwsGet("https://api.weather.gov/products/"+item.id,T_EXTRA).then(function(p){return{text:p.productText,issued:p.issuanceTime};}).catch(function(){return null;});})).then(function(r){return r.filter(Boolean);});});}
-function fetchLSR(office){return nwsGet("https://api.weather.gov/products/types/LSR/locations/"+office,T_EXTRA).then(function(list){var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;if(!id)return null;return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA).then(function(p){return{text:p.productText,issued:p.issuanceTime,office:office};});});}
-function fetchASOSPrecip(stationId){return nwsGet("https://api.weather.gov/stations/"+stationId+"/observations?limit=24",T_NWS_FC).then(function(data){var obs=(data.features||[]).map(function(f){var p=f.properties;return{timestamp:p.timestamp,precip_1hr_in:mmIn(p.precipitationLastHour?p.precipitationLastHour.value:null),precip_3hr_in:mmIn(p.precipitationLast3Hours?p.precipitationLast3Hours.value:null),precip_6hr_in:mmIn(p.precipitationLast6Hours?p.precipitationLast6Hours.value:null),sky:p.textDescription||null};}).filter(function(o){return o.precip_1hr_in!==null||o.precip_3hr_in!==null||o.precip_6hr_in!==null;});return{station:stationId,observations:obs};});}
 
-// ── Geocoding ─────────────────────────────────────────────────────────────────
-function resolveLocation(input){var el=document.getElementById("geocode-status");el.style.color="var(--dim)";el.textContent="Resolving…";var coordM=input.match(/^([+-]?\d{1,3}\.?\d*)[,\s\/]+([+-]?\d{1,3}\.?\d*)$/);if(coordM){var lat=parseFloat(coordM[1]),lon=parseFloat(coordM[2]);if(lat>=-90&&lat<=90&&lon>=-180&&lon<=180){el.style.color="var(--success)";el.textContent="✓ "+lat.toFixed(4)+", "+lon.toFixed(4);return fetchWT("https://nominatim.openstreetmap.org/reverse?format=json&lat="+lat+"&lon="+lon+"&zoom=12",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO).then(function(r){return r.json();}).then(function(d){var a=d.address||{};var lbl=[a.city||a.town||a.village||a.hamlet,a.state].filter(Boolean).join(", ")||lat.toFixed(4)+", "+lon.toFixed(4);el.textContent="✓ "+lbl;return{lat:lat,lon:lon,label:lbl};}).catch(function(){return{lat:lat,lon:lon,label:lat.toFixed(4)+", "+lon.toFixed(4)};});}}var q=input.match(/^\d{5}(-\d{4})?$/)?(input+", USA"):input;return fetchWT("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&countrycodes=us,ca,gb,au,nz,ie&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO).then(function(r){return r.json();}).then(function(results){if(!results.length)return fetchWT("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO).then(function(r){return r.json();});return results;}).then(function(results){if(!results.length){el.style.color="var(--danger)";el.textContent="✗ Not found: "+input;return null;}var hit=results[0],lat=parseFloat(hit.lat),lon=parseFloat(hit.lon),a=hit.address||{};var lbl=(a.city||a.town||a.village||a.hamlet)?((a.city||a.town||a.village||a.hamlet)+", "+(a.state||a.country||"")):hit.display_name.split(",").slice(0,2).join(",").trim();el.style.color="var(--success)";el.textContent="✓ "+lbl+" ("+lat.toFixed(4)+", "+lon.toFixed(4)+")";return{lat:lat,lon:lon,label:lbl};}).catch(function(e){el.style.color="var(--danger)";el.textContent="✗ Error: "+e.message;return null;});}
+// ── Snow panel ──
+function renderSnowPanel(rawQpf, forecast7){
+  const panel=document.getElementById('snowPanel');
+  if(!rawQpf) return;
 
-// ── Node management ───────────────────────────────────────────────────────────
-function newNode(id,label,lat,lon,role){return{id:id,label:label,lat:lat,lon:lon,role:role,nws:null,uv:null,climate:null,gridpoint:null,aq:null,ero:null,mpd:null,lsr:null,asosPrecip:null,hwo:null,ecmwf:null,ensemble:null,errors:[],timeouts:[],status:"idle"};}
-function addNode(){var input=document.getElementById("input-location").value.trim();if(!input)return;var role=document.getElementById("input-role").value;resolveLocation(input).then(function(loc){if(!loc)return;var id="n"+(STATE.nextId++);STATE.nodes.push(newNode(id,loc.label,loc.lat,loc.lon,role));document.getElementById("input-location").value="";renderNodeList();renderTabs();fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);});}
-function removeNode(id){STATE.nodes=STATE.nodes.filter(function(n){return n.id!==id;});if(STATE.activeTab===id)STATE.activeTab=STATE.nodes[0]?STATE.nodes[0].id:"";renderNodeList();renderTabs();renderActivePanel();}
-function addPreset(i){var p=PRESETS[i];if(STATE.nodes.some(function(n){return Math.abs(n.lat-p.lat)<0.01&&Math.abs(n.lon-p.lon)<0.01;})){return;}var id="n"+(STATE.nextId++);STATE.nodes.push(newNode(id,p.label,p.lat,p.lon,p.role));renderNodeList();renderTabs();fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);}
+  const snowPeriods=rawQpf.snowfall_periods||[];
+  const icePeriods=rawQpf.ice_periods||[];
 
-// ── Fetch orchestration ───────────────────────────────────────────────────────
-function fetchSingleNode(node){
-  node.status="loading";node.errors=[];node.timeouts=[];
-  node.gridpoint=null;node.aq=null;node.hwo=null;node.ero=null;node.mpd=null;node.lsr=null;node.asosPrecip=null;node.ecmwf=null;node.ensemble=null;
-  renderNodeList();renderTabs();updateStickyBar();
-  var nwsP=fetchNodeNWS(node.lat,node.lon).then(function(d){node.nws=d;}).catch(function(e){node.errors.push(e.isTimeout?"NWS: timed out":"NWS: "+e.message);if(e.isTimeout)node.timeouts.push("NWS");node.nws=null;});
-  var uvP=fetchNodeUV(node.lat,node.lon).then(function(d){node.uv=d;}).catch(function(e){node.errors.push(e.isTimeout?"Open-Meteo: timed out":"OM: "+e.message);if(e.isTimeout)node.timeouts.push("OM");node.uv=null;});
-  var climP=fetchNodeClimate(node.lat,node.lon).then(function(d){node.climate=d;}).catch(function(){node.climate=null;});
-  return Promise.all([nwsP,uvP,climP]).then(function(){
-    var extras=[];
-    if(node.nws&&node.nws.gridId&&node.nws.gridX!=null){extras.push(fetchNodeGridpoint(node.nws.gridId,node.nws.gridX,node.nws.gridY).then(function(d){node.gridpoint=d;}).catch(function(e){node.errors.push("NWS QPF: "+e.message);}));}
-    if(STATE.extraProducts.aq)extras.push(fetchNodeAQ(node.lat,node.lon).then(function(d){node.aq=d;}).catch(function(e){node.errors.push("AQ: "+e.message);}));
-    if(STATE.extraProducts.ero)extras.push(fetchERO().then(function(d){node.ero=d;}).catch(function(e){node.errors.push("ERO: "+e.message);}));
-    if(STATE.extraProducts.mpd)extras.push(fetchMPD().then(function(d){node.mpd=d;}).catch(function(e){node.errors.push("MPD: "+e.message);}));
-    if(STATE.extraProducts.lsr&&node.nws&&node.nws.office)extras.push(fetchLSR(node.nws.office).then(function(d){node.lsr=d;}).catch(function(e){node.errors.push("LSR: "+e.message);}));
-    if(STATE.extraProducts.asosPrecip&&node.nws&&node.nws.stationId)extras.push(fetchASOSPrecip(node.nws.stationId).then(function(d){node.asosPrecip=d;}).catch(function(e){node.errors.push("ASOS: "+e.message);}));
-    if(STATE.extraProducts.hwo&&node.nws&&node.nws.office)extras.push(fetchHWO(node.nws.office).then(function(d){node.hwo=d;}).catch(function(e){node.errors.push("HWO: "+e.message);}));
-    if(STATE.omModels.ecmwf)extras.push(fetchNodeECMWF(node.lat,node.lon).then(function(d){node.ecmwf=d;}).catch(function(e){node.errors.push("ECMWF: "+e.message);}));
-    if(STATE.omModels.ensemble)extras.push(fetchNodeEnsemble(node.lat,node.lon).then(function(d){node.ensemble=d;}).catch(function(e){node.errors.push("Ensemble: "+e.message);}));
-    return Promise.all(extras);
-  }).then(function(){
-    node.status=(node.nws||node.uv)?"ready":"error";
-    renderNodeList();renderTabs();renderActivePanel();updateStickyBar();
+  // Also check if any 7-day period mentions snow/ice in sky description
+  const snowIn7day=forecast7.some(p=>{
+    const s=(p.sky||'').toLowerCase();
+    return s.includes('snow')||s.includes('sleet')||s.includes('ice pellet')||s.includes('freezing');
   });
-}
 
-// ── PATCH 4: Stagger multi-node NWS 350ms per node ───────────────────────────
-function fetchAllNodes(){
-  var btn=document.getElementById("refresh-btn");btn.disabled=true;btn.textContent="Fetching…";
-  document.getElementById("loading").style.display="block";
-  var spcP=Promise.resolve();
-  if(STATE.extraProducts.spc){spcP=Promise.all([fetchSPCDay("SWODY1").catch(function(){return null;}),fetchSPCDay("SWODY2").catch(function(){return null;})]).then(function(r){STATE.spcData={day1:r[0],day2:r[1]};}).catch(function(){STATE.spcData=null;});}
-  var t0=Date.now();
-  Promise.all([spcP].concat(STATE.nodes.map(function(n,idx){
-    return new Promise(function(res){setTimeout(res,idx*350);})
-      .then(function(){return fetchSingleNode(n);});
-  }))).then(function(){
-    STATE.fetchTime=Date.now()-t0;document.getElementById("loading").style.display="none";
-    btn.disabled=false;btn.textContent="↻ Fetch All";
-    document.getElementById("fetch-time").textContent=(STATE.fetchTime/1000).toFixed(1)+"s";
-    updateStickyBar();
-  });
-}
-function updateActionBar(){updateStickyBar();}
+  const hasSnow=snowPeriods.length>0;
+  const hasIce=icePeriods.length>0;
 
-// ── Export ────────────────────────────────────────────────────────────────────
-function buildExportPayload(){
-  var now=new Date();
-  var nodes=STATE.nodes.map(function(node){
-    var nws=node.nws,uv=node.uv,obs=nws?nws.observation:null;
-    var fcWind0=nws&&nws.hourly&&nws.hourly[0]?parseNWSWind(nws.hourly[0].windSpeed):null;
-    var WIND_ABS=45;
-    var WIND_DELTA=3.5;
-    var curObs=null;
-    if(obs){curObs={timestamp:obs.timestamp,temperature_f:cF(obs.temperature?obs.temperature.value:null),dewpoint_f:cF(obs.dewpoint?obs.dewpoint.value:null),humidity_pct:obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null,wind_speed_mph:(function(){var ws=mphv(obs.windSpeed?obs.windSpeed.value:null);if(ws===null)return null;if(ws>WIND_ABS)return null;if(fcWind0!==null&&fcWind0>0&&ws>fcWind0*WIND_DELTA)return null;return ws;}()),wind_direction:compass(obs.windDirection?obs.windDirection.value:null),wind_gust_mph:(function(){var ws=mphv(obs.windSpeed?obs.windSpeed.value:null);var wg=mphv(obs.windGust?obs.windGust.value:null);var wsSupp=(ws!==null&&(ws>WIND_ABS||(fcWind0!==null&&fcWind0>0&&ws>fcWind0*WIND_DELTA)));if(wsSupp)return null;if(wg!==null&&ws===null&&wg>50)return null;return wg;}()),wind_gust_flag:(function(){var ws=mphv(obs.windSpeed?obs.windSpeed.value:null);var wg=mphv(obs.windGust?obs.windGust.value:null);if(ws!==null&&ws>WIND_ABS)return"ARTIFACT: sustained "+ws+"mph > abs max "+WIND_ABS+"mph suppressed";if(ws!==null&&fcWind0!==null&&fcWind0>0&&ws>fcWind0*WIND_DELTA)return"ARTIFACT: sustained "+ws+"mph = "+Math.round(ws/fcWind0*10)/10+"x forecast "+fcWind0+"mph suppressed";if(wg!==null&&ws===null&&wg>50)return"ARTIFACT: raw gust "+wg+"mph with null sustained suppressed";return null;}()),visibility_mi:mMi(obs.visibility?obs.visibility.value:null),pressure_inhg:inHg(obs.barometricPressure?obs.barometricPressure.value:null),sky:obs.textDescription,present_weather:(obs.presentWeather||[]).map(function(w){return{weather:w.weather||null,intensity:w.intensity||null,modifier:w.modifier||null};}),cloud_layers:(obs.cloudLayers||[]).map(function(c){return{coverage:c.amount||null,base_ft:c.base&&c.base.value!=null?Math.round(c.base.value*3.281):null};}),raw_metar:obs.rawMessage||null};}
-    var curUV=null;if(uv&&uv.hourly){var nowH=now.toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){curUV=uv.hourly.uv_index[ui];break;}}}
-    var hrs=STATE.hourlyWindow;
-    var nwsHourly=(nws&&nws.hourly||[]).slice(0,hrs).map(function(h){var huv=null;if(uv&&uv.hourly){var hk=h.startTime.slice(0,13);for(var j=0;j<(uv.hourly.time||[]).length;j++){if(uv.hourly.time[j].indexOf(hk)===0){huv=uv.hourly.uv_index[j];break;}}}return{time:h.startTime,temp_f:h.temperature,wind:h.windSpeed,wind_dir:h.windDirection,precip_pct:(h.probabilityOfPrecipitation&&h.probabilityOfPrecipitation.value)||0,sky:h.shortForecast,uv_index:huv};});
-    var fc7=(nws&&nws.forecast||[]).map(function(p){return{name:p.name,temp_f:p.temperature,temp_unit:p.temperatureUnit,wind:p.windSpeed,wind_dir:p.windDirection,precip_pct:(p.probabilityOfPrecipitation&&p.probabilityOfPrecipitation.value)||0,sky:p.shortForecast,narrative:p.detailedForecast};});
-    var alerts=(nws&&nws.alerts||[]).map(function(a){return{event:a.properties.event,severity:a.properties.severity,headline:a.properties.headline,onset:a.properties.onset,expires:a.properties.expires};});
-    var afdTxt=nws&&nws.afd&&STATE.afdMode!=="none"?(STATE.afdMode==="summary"?nws.afd.slice(0,2000)+(nws.afd.length>2000?"\n[truncated]":""):nws.afd):null;
-    var omH=null;
-    if(uv&&uv.hourly){var times=uv.hourly.time||[];omH=[];for(var k=0;k<Math.min(times.length,hrs);k++){var t=new Date(times[k]);if(t<new Date(now.getTime()-3600000))continue;var e={time:times[k],uv_index:uv.hourly.uv_index[k],temp_f:uv.hourly.temperature_2m[k],feels_like_f:uv.hourly.apparent_temperature[k],humidity_pct:uv.hourly.relative_humidity_2m[k],dewpoint_f:uv.hourly.dew_point_2m[k],precip_pct:uv.hourly.precipitation_probability[k],wind_mph:uv.hourly.wind_speed_10m[k],wind_dir_deg:uv.hourly.wind_direction_10m[k],wind_gust_mph:uv.hourly.wind_gusts_10m[k],cloud_cover_pct:uv.hourly.cloud_cover[k]};if(STATE.omVars.qpf&&uv.hourly.precipitation)e.precip_in=uv.hourly.precipitation[k];if(STATE.omVars.convective&&uv.hourly.cape)e.cape=uv.hourly.cape[k];omH.push(e);}}
-    var omD=null,astro=null;
-    if(uv&&uv.daily){var dtimes=uv.daily.time||[];omD=dtimes.map(function(date,di){var sr=uv.daily.sunrise?uv.daily.sunrise[di]:null,ss=uv.daily.sunset?uv.daily.sunset[di]:null;var dlMin=sr&&ss?Math.round((new Date(ss)-new Date(sr))/60000):null;var pIn=uv.daily.precipitation_sum?uv.daily.precipitation_sum[di]:null;var isFuture=(date>=now.toISOString().slice(0,10));var warn=(pIn!=null&&pIn>2.0&&isFuture)?"HIGH_OM_PRECIP: raw GFS/ICON; verify against nws_gridpoint_qpf":null;return{date:date,sunrise_iso:sr,sunset_iso:ss,day_length_min:dlMin,day_length_formatted:dlMin!=null?(Math.floor(dlMin/60)+"h "+pad2(dlMin%60)+"m"):null,precip_in:pIn,precip_model_warning:warn,snowfall_in:uv.daily.snowfall_sum?uv.daily.snowfall_sum[di]:null,wind_max_mph:uv.daily.wind_speed_10m_max?uv.daily.wind_speed_10m_max[di]:null,uv_index_max:uv.daily.uv_index_max?uv.daily.uv_index_max[di]:null,apparent_temp_max_f:uv.daily.apparent_temperature_max?uv.daily.apparent_temperature_max[di]:null,apparent_temp_min_f:uv.daily.apparent_temperature_min?uv.daily.apparent_temperature_min[di]:null,precip_prob_max:uv.daily.precipitation_probability_max?uv.daily.precipitation_probability_max[di]:null,shortwave_mj_m2:uv.daily.shortwave_radiation_sum?uv.daily.shortwave_radiation_sum[di]:null};});var todayStr=now.toISOString().slice(0,10);for(var ti=0;ti<omD.length;ti++){if(omD[ti].date===todayStr){astro={date:omD[ti].date,sunrise_iso:omD[ti].sunrise_iso,sunset_iso:omD[ti].sunset_iso,day_length_min:omD[ti].day_length_min,day_length_formatted:omD[ti].day_length_formatted,uv_index_max:omD[ti].uv_index_max};break;}}}
-    var ecExport=null;
-    if(node.ecmwf){ecExport=JSON.parse(JSON.stringify(node.ecmwf));if(ecExport.hourly&&ecExport.hourly.precipitation){ecExport.hourly.precipitation=ecExport.hourly.precipitation.map(function(v,i){return i%3===0?v:0;});ecExport._precip_note="de-duped from 3hr native (Bug 1)";}}
-    return{id:node.id,role:node.role,label:node.label,latitude:node.lat,longitude:node.lon,nws_office:nws?nws.office:null,station:nws?nws.stationId:null,current_observations:curObs,current_uv_index:curUV,nws_hourly_forecast:nwsHourly,nws_7day_forecast:fc7,nws_gridpoint_qpf:node.gridpoint||null,qpf_divergence_flags:(function(){if(!node.gridpoint||!uv||!uv.daily)return null;var flags=[];var omByDate={};(uv.daily.time||[]).forEach(function(d,i){omByDate[d]=uv.daily.precipitation_sum?uv.daily.precipitation_sum[i]:null;});(node.gridpoint.qpf_daily_utc||[]).forEach(function(r){var omV=omByDate[r.date];if(omV==null)return;var nwsV=r.precip_in||0;if(nwsV===0&&omV===0)return;var ratio=omV>0?nwsV/omV:(nwsV>0?99:null);if(ratio===null)return;if(ratio>2.5)flags.push({date:r.date,nws_in:nwsV,om_in:omV,ratio:Math.round(ratio*10)/10,note:"NWS>>OM"});else if(ratio<0.4&&nwsV>0.05)flags.push({date:r.date,nws_in:nwsV,om_in:omV,ratio:Math.round(ratio*10)/10,note:"OM>>NWS"});});return flags.length?flags:null;}()),open_meteo_hourly:omH,open_meteo_daily:omD,astronomy:astro,climate_normals:node.climate||null,alerts:alerts,afd:afdTxt?{office:nws.office,issued:nws.afdTime,mode:STATE.afdMode,text:afdTxt}:null,air_quality:node.aq||null,wpc_ero:node.ero||null,wpc_mpd:node.mpd||null,lsr:node.lsr||null,asos_precip:node.asosPrecip||null,hwo:node.hwo||null,ecmwf_ifs:ecExport,ensemble:node.ensemble||null,source_freshness:{observations:obs?obs.timestamp:null,hourly_forecast:nws?nws.hourlyUpdated:null,seven_day_forecast:nws?nws.forecastUpdated:null,afd:nws?nws.afdTime:null,nws_gridpoint_qpf:node.gridpoint?now.toISOString():null,open_meteo:now.toISOString(),climate_normals:node.climate?"ERA5 2015-2024":null}};
-  });
-  var payload={_format:"weather-station-export-v2",_version:VERSION,_generated:now.toISOString(),_node_count:nodes.length,_note:"NWS gridpoint QPF is authoritative for US precipitation. ECMWF precipitation de-duped (Bug 1). Climate normals: ERA5 reanalysis 2015–2024.",nodes:nodes};
-  if(STATE.extraProducts.spc&&STATE.spcData)payload.spc_outlook=STATE.spcData;
-  return payload;
-}
-function getExportText(){try{return"<weather_data>\n"+JSON.stringify(buildExportPayload(),null,2)+"\n</weather_data>";}catch(e){return"ERROR: "+e.message;}}
-function copyForClaude(){var t=getExportText();if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(flash).catch(function(){fallbackCopy(t);});}else{fallbackCopy(t);}}
-function fallbackCopy(t){var ta=document.createElement("textarea");ta.value=t;ta.style.cssText="position:fixed;left:-9999px";document.body.appendChild(ta);ta.select();try{document.execCommand("copy");flash();}catch(e){}document.body.removeChild(ta);}
-function flash(){var el=document.getElementById("sticky-copy-status");if(el){el.classList.add("show");setTimeout(function(){el.classList.remove("show");},2500);}}
-function showPreview(){document.getElementById("export-modal-content").textContent=getExportText();document.getElementById("export-modal").classList.add("open");}
-function closePreview(){document.getElementById("export-modal").classList.remove("open");}
-
-// ── Render Node List & Tabs ───────────────────────────────────────────────────
-function renderNodeList(){
-  document.getElementById("node-list").innerHTML=STATE.nodes.map(function(n){
-    var st=n.status==="loading"?'<span class="spinner"></span>':n.status==="ready"?'<span style="color:var(--success)">✓</span>':n.status==="error"?'<span style="color:var(--danger)">✗</span>':'—';
-    var qpfBadge=n.gridpoint?'<span style="color:var(--success);font-size:10px;margin-left:4px">QPF</span>':n.status==="loading"?'<span style="color:var(--dim);font-size:10px;margin-left:4px">QPF</span>':'';
-    var clBadge=n.climate?'<span style="color:var(--purple);font-size:10px;margin-left:4px">ERA5</span>':'';
-    return'<div class="node-item"><span class="role-badge '+ROLE_CLASSES[n.role]+'">'+ROLE_LABELS[n.role]+'</span><span class="node-label">'+esc(n.label)+'</span><span class="node-coords">'+n.lat.toFixed(4)+', '+n.lon.toFixed(4)+'</span><span class="node-status">'+st+qpfBadge+clBadge+'</span>'+(STATE.nodes.length>1?'<button class="btn btn-danger btn-sm" onclick="removeNode(\''+n.id+'\')">✗</button>':'')+'</div>';
-  }).join("");
-  updateSettingsSummary();
-}
-function renderTabs(){
-  document.getElementById("node-tabs").innerHTML=STATE.nodes.map(function(n){return'<div class="node-tab '+(n.id===STATE.activeTab?"active":"")+'" onclick="switchTab(\''+n.id+'\')"><span>'+esc(n.label)+'</span><span class="tab-role">'+ROLE_LABELS[n.role]+'</span></div>';}).join("");
-  document.getElementById("header-sub").innerHTML=STATE.nodes.length+" node"+(STATE.nodes.length!==1?"s":"")+" &middot; "+STATE.nodes.map(function(n){return n.label;}).join(" → ")+" &middot; <span style='opacity:.5'>v"+VERSION+"</span>";
-}
-function switchTab(id){STATE.activeTab=id;renderTabs();renderActivePanel();updateStickyBar();}
-
-// ── Pill helper ───────────────────────────────────────────────────────────────
-function pill(l,val,u,s){return'<div class="pill"><div class="label">'+l+'</div><div class="value">'+val+'<span class="unit">'+u+'</span></div>'+(s?'<div class="sub">'+s+'</div>':'')+'</div>';}
-
-// ── Main panel render ─────────────────────────────────────────────────────────
-function renderActivePanel(){
-  var panel=document.getElementById("node-panels");
-  var node=null;for(var i=0;i<STATE.nodes.length;i++){if(STATE.nodes[i].id===STATE.activeTab){node=STATE.nodes[i];break;}}
-  if(!node){panel.innerHTML="";return;}
-  var nws=node.nws,uv=node.uv,html="";
-
-  // PATCH 5: Errors with targeted NWS retry button
-  if(node.errors.length){
-    var hasNWSErr=node.errors.some(function(e){return e.indexOf("NWS")===0;});
-    html+='<div class="errors">'+
-      node.errors.map(function(e){return'<div>✗ '+esc(e)+'</div>';}).join("")+
-      (hasNWSErr?'<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="retryNWS(\''+node.id+'\')">↻ Retry NWS only</button></div>':'')+
-      '</div>';
+  if(!hasSnow&&!hasIce&&!snowIn7day){
+    panel.style.display='none';
+    return;
   }
 
-  if(nws&&nws.alerts&&nws.alerts.length)html+=nws.alerts.map(function(a){var p=a.properties,sev=(p.severity==="Extreme"||p.severity==="Severe")?"severe":"moderate";return'<div class="alert-box '+sev+'"><div class="alert-title" style="color:var(--'+(sev==="severe"?"danger":"warn")+'">⚠ '+esc(p.event)+'</div><div class="alert-headline">'+esc(p.headline||"")+'</div><div class="alert-time">'+ts(p.onset)+' → '+ts(p.expires)+'</div></div>';}).join("");
+  panel.style.display='block';
 
-  if(nws&&nws.observation){
-    var obs=nws.observation;
-    var t=cF(obs.temperature?obs.temperature.value:null),dew=cF(obs.dewpoint?obs.dewpoint.value:null);
-    var ws=mphv(obs.windSpeed?obs.windSpeed.value:null),wg=mphv(obs.windGust?obs.windGust.value:null),wd=compass(obs.windDirection?obs.windDirection.value:null);
-    var vis=mMi(obs.visibility?obs.visibility.value:null),pres=inHg(obs.barometricPressure?obs.barometricPressure.value:null);
-    var hum=obs.relativeHumidity&&obs.relativeHumidity.value!=null?Math.round(obs.relativeHumidity.value):null;
-    var fl=nws.hourly&&nws.hourly[0]?nws.hourly[0].temperature:null;
-    var curUV=null;if(uv&&uv.hourly){var nowH=new Date().toISOString().slice(0,13);for(var ui=0;ui<(uv.hourly.time||[]).length;ui++){if(uv.hourly.time[ui].indexOf(nowH)===0){curUV=uv.hourly.uv_index[ui];break;}}}
-    html+='<div class="section-header"><h2>Current Conditions</h2><span class="badge badge-fresh">'+ago(obs.timestamp)+'</span><span class="meta">'+ts(obs.timestamp)+'</span></div>';
-    html+='<div class="pills">'+pill("Temp",vv(t),"°F",obs.textDescription||"")+pill("Feels like",vv(fl),"°F","")+pill("Dew Pt",vv(dew),"°F","")+pill("Humidity",vv(hum),"%","")+pill("Wind",vv(ws)," mph",wd+(wg?" · G"+wg:""))+pill("Vis",vv(vis)," mi","")+pill("Pressure",vv(pres)," inHg","")+pill("UV",curUV!=null?Math.round(curUV*10)/10:"—","",curUV==null?"—":curUV<3?"Low":curUV<6?"Mod":"High")+'</div>';
-    if(uv&&uv.daily){
-      var todayStr=new Date().toISOString().slice(0,10),dIdx=-1;
-      for(var di=0;di<(uv.daily.time||[]).length;di++){if(uv.daily.time[di]===todayStr){dIdx=di;break;}}
-      if(dIdx>=0){
-        var sr=uv.daily.sunrise?uv.daily.sunrise[dIdx]:null,ss=uv.daily.sunset?uv.daily.sunset[dIdx]:null;
-        var dlMin=sr&&ss?Math.round((new Date(ss)-new Date(sr))/60000):null;
-        var uvMx=uv.daily.uv_index_max?uv.daily.uv_index_max[dIdx]:null;
-        var apMax=uv.daily.apparent_temperature_max?uv.daily.apparent_temperature_max[dIdx]:null;
-        if(sr||ss){
-          html+='<div class="astro-bar">';
-          html+='<div class="astro-item">☀️ <span class="astro-val">'+fmtShortTime(sr)+'</span> rise</div>';
-          html+='<div class="astro-item">🌙 <span class="astro-val">'+fmtShortTime(ss)+'</span> set</div>';
-          if(dlMin!=null)html+='<div class="astro-item"><span class="astro-val">'+Math.floor(dlMin/60)+'h '+pad2(dlMin%60)+'m</span> daylight</div>';
-          if(uvMx!=null)html+='<div class="astro-item">UV max <span class="astro-val" style="color:'+(uvMx<3?"var(--success)":uvMx<6?"var(--warn)":"var(--danger)")+'">'+Math.round(uvMx*10)/10+'</span></div>';
-          if(apMax!=null)html+='<div class="astro-item">Feels max <span class="astro-val">'+Math.round(apMax)+'°</span></div>';
-          html+='<span style="opacity:.35;font-size:9px;margin-left:auto;font-family:var(--mono)">Open-Meteo</span></div>';
+  // Aggregate snowfall into daily totals
+  const snowByDay={};
+  snowPeriods.forEach(p=>{
+    const day=new Date(p.start).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    snowByDay[day]=(snowByDay[day]||0)+(p.snow_in||0);
+  });
+
+  const iceByDay={};
+  icePeriods.forEach(p=>{
+    const day=new Date(p.start).toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    iceByDay[day]=(iceByDay[day]||0)+(p.ice_in||0);
+  });
+
+  // Total accumulation
+  const totalSnow=snowPeriods.reduce((s,p)=>s+(p.snow_in||0),0);
+  const totalIce=icePeriods.reduce((s,p)=>s+(p.ice_in||0),0);
+
+  // Build snow grid — up to 4 day cards
+  const grid=document.getElementById('snowGrid');
+  const allDays=[...new Set([...Object.keys(snowByDay),...Object.keys(iceByDay)])].slice(0,4);
+
+  if(allDays.length){
+    grid.innerHTML=allDays.map(day=>{
+      const s=snowByDay[day]||0;
+      const ic=iceByDay[day]||0;
+      const hasBoth=s>0&&ic>0;
+      return`<div class="snow-cell">
+        <div class="snow-cell-label">${day}</div>
+        ${s>0?`<div class="snow-cell-val">${s.toFixed(1)}"</div><div class="snow-cell-sub">snow</div>`:''}
+        ${ic>0?`<div class="snow-cell-val" style="color:#fde68a">${ic.toFixed(2)}"</div><div class="snow-cell-sub">ice accum</div>`:''}
+      </div>`;
+    }).join('');
+    // Total card
+    if(allDays.length<4&&totalSnow>0){
+      grid.innerHTML+=`<div class="snow-cell" style="border-color:rgba(168,216,240,0.3)">
+        <div class="snow-cell-label">Total</div>
+        <div class="snow-cell-val">${totalSnow.toFixed(1)}"</div>
+        <div class="snow-cell-sub">liquid equiv</div>
+      </div>`;
+    }
+  } else if(snowIn7day){
+    grid.innerHTML=`<div class="snow-cell" style="grid-column:1/-1">
+      <div class="snow-cell-label">Snow/wintry mix in 7-day forecast</div>
+      <div class="snow-cell-val" style="font-size:13px">See 7-day strip below</div>
+      <div class="snow-cell-sub">NWS gridpoint snowfall data not yet available for this period</div>
+    </div>`;
+  }
+
+  // Ice flag
+  const iceEl=document.getElementById('iceFlag');
+  if(hasIce){
+    iceEl.style.display='flex';
+    const iceWindows=icePeriods.map(p=>{
+      const d=new Date(p.start);
+      return d.toLocaleString('en-US',{weekday:'short',month:'short',day:'numeric',hour:'numeric',hour12:true});
+    }).slice(0,3).join(', ');
+    document.getElementById('iceFlagText').textContent=
+      `Ice accumulation forecast: ${totalIce.toFixed(2)}" total. Windows: ${iceWindows}. `+
+      `Power outage and road ice risk elevated — treat as hazard regardless of total accumulation.`;
+  } else {
+    iceEl.style.display='none';
+  }
+
+  // Freezing rain / mix flag from hourly
+  const mixHours=hourly.filter(h=>h.precipType==='mix'&&h.pop>=20);
+  const mixEl=document.getElementById('mixFlag');
+  if(mixHours.length){
+    const first=mixHours[0];
+    const last=mixHours[mixHours.length-1];
+    const firstLbl=new Date(first.iso).toLocaleString('en-US',{weekday:'short',hour:'numeric',hour12:true});
+    const lastLbl=new Date(last.iso).toLocaleString('en-US',{hour:'numeric',hour12:true});
+    mixEl.style.display='flex';
+    document.getElementById('mixFlagText').textContent=
+      `Freezing rain / wintry mix risk: ${mixHours.length}h window starting ${firstLbl}–${lastLbl}. `+
+      `Temps 28–35°F with precip — black ice on surfaces likely. PoP up to ${Math.max(...mixHours.map(h=>h.pop))}%.`;
+  } else {
+    mixEl.style.display='none';
+  }
+}
+
+function buildSevenDay(periods){
+  const days=[];
+  const seen=new Set();
+  for(const p of periods){
+    const base=p.name.replace(' Night','').trim();
+    if(seen.has(base)) continue;
+    seen.add(base);
+    const night=periods.find(n=>n.name===base+' Night'||(base==='Tonight'&&n.name==='Tonight'));
+    const day=periods.find(n=>n.name===base);
+    if(!day) continue;
+    const hi=!day.name.includes('Night')?day.temp_f:null;
+    const lo=night?night.temp_f:(day.name.includes('Night')?day.temp_f:null);
+    const pop=Math.max(day.precip_pct||0,night?(night.precip_pct||0):0);
+    const sky=day.sky||'';
+    days.push({
+      name:base==='Tonight'?'Tonight':base.slice(0,3),
+      icon:skyToIcon(sky),hi,lo,pop,
+      type:popType(sky,hi||lo||50),
+    });
+    if(days.length>=7) break;
+  }
+  return days;
+}
+
+function buildQpfBuckets(rawQpf){
+  if(!rawQpf||!rawQpf.qpf_periods) return [];
+  return rawQpf.qpf_periods.slice(0,16).map(p=>{
+    const d=new Date(p.start);
+    const mo=d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    const h=d.getUTCHours();
+    const fmt=x=>x===0?'12a':x<12?x+'a':x===12?'12p':(x-12)+'p';
+    return{l:`${mo} ${fmt(h)}-${fmt(h+p.hours)}`,v:p.precip_in||0};
+  });
+}
+
+function buildSnowQpfBuckets(rawQpf){
+  if(!rawQpf||!rawQpf.qpf_periods) return [];
+  const snowPeriods=rawQpf.snowfall_periods||[];
+  if(!snowPeriods.length) return rawQpf.qpf_periods.slice(0,16).map(()=>0);
+  // Map snow periods to same time buckets as QPF
+  return rawQpf.qpf_periods.slice(0,16).map(bucket=>{
+    const bStart=new Date(bucket.start).getTime();
+    const bEnd=bStart+bucket.hours*3600000;
+    const snow=snowPeriods.filter(s=>{
+      const sStart=new Date(s.start).getTime();
+      const sEnd=sStart+s.hours*3600000;
+      return sStart<bEnd&&sEnd>bStart;
+    }).reduce((sum,s)=>sum+(s.snow_in||0),0);
+    return Math.round(snow*1000)/1000;
+  });
+}
+
+function renderAlerts(alerts){
+  const el=document.getElementById('alertBanners');
+  if(!alerts.length){el.innerHTML='';return;}
+  el.innerHTML=alerts.map(a=>{
+    const cls=alertClass(a);
+    const icon=alertIcon(a);
+    return`<div class="alert-banner ${cls}"><span class="alert-icon">${icon}</span><div>
+      <strong>${escHtml(a.event||'Alert')}</strong> · ${escHtml(a.headline||'')}
+      ${a.expires?`<span style="opacity:.7"> · expires ${fmtIsoShort(a.expires)}</span>`:''}
+    </div></div>`;
+  }).join('');
+}
+
+function renderNwsZone(obs){
+  if(!obs) return;
+  const temp=obs.temperature_f!=null?Math.round(obs.temperature_f)+'°F':'—';
+  const sky=obs.sky||'—';
+  const hum=obs.humidity_pct!=null?obs.humidity_pct+'%':'—';
+  const dew=obs.dewpoint_f!=null?Math.round(obs.dewpoint_f)+'°F':'—';
+  const wind=(obs.wind_direction||'—')+' '+(obs.wind_speed_mph!=null?obs.wind_speed_mph+' mph':'calm')
+             +(obs.wind_gust_mph?' · G'+obs.wind_gust_mph+' mph':'');
+  const pres=obs.pressure_inhg!=null?obs.pressure_inhg+' inHg':'—';
+  const vis=obs.visibility_mi!=null?obs.visibility_mi+' mi':'—';
+  const ago=obs.timestamp?fmtAgo(Date.now()-new Date(obs.timestamp).getTime()):'';
+  document.getElementById('nwsTemp').textContent=temp;
+  document.getElementById('nwsSky').textContent=sky;
+  document.getElementById('nwsObsAge').textContent=ago?'obs '+ago:'';
+  document.getElementById('nwsHum').textContent=hum;
+  document.getElementById('nwsDew').textContent=dew;
+  document.getElementById('nwsWind').textContent=wind;
+  document.getElementById('nwsPres').textContent=pres;
+  document.getElementById('nwsVis').textContent=vis;
+}
+
+function renderHeadlineCards(forecast7){
+  const tonightP=forecast7.find(p=>p.name==='Tonight'||p.name.toLowerCase().includes('night'));
+  if(tonightP){
+    const lo=tonightP.temp_f;
+    const isFreeze=lo<=32;
+    document.getElementById('statTonightVal').textContent=lo+'°F';
+    document.getElementById('statTonightVal').style.color=isFreeze?'var(--freeze)':'var(--text)';
+    document.getElementById('statTonightSub').textContent=tonightP.sky||'';
+    document.getElementById('cardTonightLow').className='stat-card '+(isFreeze?'ac-freeze':'ac-ok');
+  }
+  const rainP=forecast7.find(p=>(p.precip_pct||0)>=30);
+  if(rainP){
+    document.getElementById('statNextRainVal').textContent=rainP.name;
+    document.getElementById('statNextRainSub').textContent=rainP.precip_pct+'% · '+rainP.sky;
+  } else {
+    document.getElementById('statNextRainVal').textContent='None 7 days';
+    document.getElementById('statNextRainSub').textContent='No significant precip forecast';
+    document.getElementById('cardNextRain').className='stat-card ac-ok';
+  }
+}
+
+function renderDayStrip(){
+  const strip=document.getElementById('dayStrip');
+  strip.innerHTML='';
+  sevenDay.forEach((d,i)=>{
+    const c=document.createElement('div');
+    c.className='day-card'+(i===0?' today':'');
+    const pc=d.type==='snow'?'pop-snow':d.type==='rain'?'pop-rain':'pop-none';
+    c.innerHTML=`<div class="day-name">${d.name}</div>
+      <div class="day-icon">${d.icon}</div>
+      <div class="day-hi">${d.hi!=null?d.hi+'°':'—'}</div>
+      <div class="day-lo">${d.lo!=null?d.lo+'°':'—'}</div>
+      <div class="day-pop ${pc}">${d.pop>0?d.pop+'%':'—'}</div>`;
+    strip.appendChild(c);
+  });
+}
+
+// ════════════════════════════════════════════════════
+// AFD — formatted rendering
+// ════════════════════════════════════════════════════
+function renderAfd(afd){
+  const meta=document.getElementById('afdMeta');
+  const content=document.getElementById('afdContent');
+  if(!afd||!afd.text){
+    content.innerHTML='<div style="font-size:11px;color:var(--dim2)">AFD not available this run</div>';
+    return;
+  }
+  const text=afd.text||'';
+  const issued=afd.issued?fmtIsoShort(afd.issued):'';
+  const forecaster=extractForecaster(text);
+  if(meta) meta.textContent=issued+(forecaster?' · '+forecaster:'');
+
+  let html='';
+
+  // Key messages
+  const keyMatch=text.match(/\.KEY MESSAGES\.\.\.([\s\S]*?)&&/i);
+  if(keyMatch){
+    const lines=keyMatch[1].trim().split('\n').filter(l=>l.trim().startsWith('-'));
+    if(lines.length){
+      html+=`<div class="afd-section">
+        <div class="afd-section-title">Key Messages</div>
+        <ul class="afd-key-list">`;
+      const dotColors=['var(--freeze)','var(--warn)','var(--accent)','var(--success)','var(--purple)'];
+      lines.forEach((l,i)=>{
+        const txt=l.replace(/^-\s*/,'').trim();
+        html+=`<li><span class="afd-key-dot" style="background:${dotColors[i%dotColors.length]}"></span><div>${escHtml(txt)}</div></li>`;
+      });
+      html+=`</ul></div>`;
+    }
+  }
+
+  // Discussion — parse into paragraphs, detect sub-headings (lines that start with "- " after a blank)
+  const discMatch=text.match(/\.DISCUSSION\.\.\.([\s\S]*?)&&/i);
+  if(discMatch){
+    html+=`<div class="afd-section">
+      <div class="afd-section-title">Discussion</div>`;
+    const raw=discMatch[1];
+    // Split on "Issued at..." lines and blank-line-separated paragraphs
+    const paras=raw.split(/\n{2,}/).map(p=>p.trim()).filter(Boolean);
+    paras.forEach(para=>{
+      // Detect sub-heading style lines (all caps, starts with "- ")
+      if(/^-\s+[A-Z]/.test(para)){
+        html+=`<div class="afd-disc-subhead">${escHtml(para.replace(/^-\s*/,''))}</div>`;
+      } else if(/^Issued at/i.test(para)){
+        // skip issuance line — already in header
+      } else {
+        // Wrap long paragraph, clean up extra whitespace
+        const clean=para.replace(/\s+/g,' ');
+        html+=`<div class="afd-disc-para">${escHtml(clean)}</div>`;
+      }
+    });
+    html+=`</div>`;
+  }
+
+  // Aviation / Marine — show collapsed raw if present
+  const avMatch=text.match(/\.AVIATION([\s\S]*?)&&/i);
+  if(avMatch){
+    html+=`<details style="margin-top:6px">
+      <summary style="font-size:9px;color:var(--dim);cursor:pointer;text-transform:uppercase;letter-spacing:0.05em">Aviation / Marine TAFs ▸</summary>
+      <div style="font-size:10px;color:var(--dim2);white-space:pre-wrap;line-height:1.6;margin-top:6px;padding:8px;background:var(--surface);border-radius:4px">${escHtml(avMatch[1].trim())}</div>
+    </details>`;
+  }
+
+  // Forecaster credit
+  const discCredit=text.match(/DISCUSSION\.\.\.(\w+)/i);
+  const avCredit=text.match(/AVIATION\.\.\.(\w+)/i);
+  if(discCredit||avCredit){
+    html+=`<div class="afd-forecaster">`;
+    if(discCredit) html+=`Discussion: ${discCredit[1]} `;
+    if(avCredit) html+=`Aviation: ${avCredit[1]}`;
+    html+=`</div>`;
+  }
+
+  content.innerHTML=html||`<div style="font-size:11px;color:var(--dim2)">No parseable content</div>`;
+}
+
+function extractForecaster(text){
+  const m=text.match(/DISCUSSION\.\.\.(\w+)/i);
+  return m?m[1]:'';
+}
+
+// ════════════════════════════════════════════════════
+// FREEZE LINE PLUGIN
+// ════════════════════════════════════════════════════
+const freezeLine={id:'fl',beforeDraw(c){
+  const{ctx,chartArea:ca,scales}=c;if(!ca)return;
+  const yKey=scales.yR||scales.y;if(!yKey)return;
+  const y32=yKey.getPixelForValue(32);
+  const y35=yKey.getPixelForValue(35);
+  const y28=yKey.getPixelForValue(28);
+  ctx.save();
+  // Mix zone band 28-35°F (amber)
+  if(y35>=ca.top&&y28<=ca.bottom){
+    const bandTop=Math.max(y35,ca.top);
+    const bandBot=Math.min(y28,ca.bottom);
+    if(bandBot>bandTop){
+      ctx.fillStyle='rgba(240,164,41,0.05)';
+      ctx.fillRect(ca.left,bandTop,ca.right-ca.left,bandBot-bandTop);
+    }
+  }
+  // 32°F freeze line
+  if(y32>=ca.top&&y32<=ca.bottom){
+    ctx.strokeStyle='rgba(96,196,248,0.5)';ctx.setLineDash([5,4]);ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(ca.left,y32);ctx.lineTo(ca.right,y32);ctx.stroke();
+    ctx.fillStyle='rgba(168,216,240,0.06)';
+    ctx.fillRect(ca.left,y32,ca.right-ca.left,ca.bottom-y32);
+    ctx.setLineDash([]);ctx.fillStyle='rgba(96,196,248,0.65)';ctx.font='9px monospace';
+    ctx.fillText('32°F',ca.right-28,y32-4);
+  }
+  // 28°F hard freeze line (darker blue)
+  if(y28>=ca.top&&y28<=ca.bottom){
+    ctx.strokeStyle='rgba(96,196,248,0.25)';ctx.setLineDash([3,5]);ctx.lineWidth=0.8;
+    ctx.beginPath();ctx.moveTo(ca.left,y28);ctx.lineTo(ca.right,y28);ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+}};
+
+// ════════════════════════════════════════════════════
+// FORECAST CHARTS
+// ════════════════════════════════════════════════════
+let hourlyChart=null, hourlyH=24;
+
+function renderHourly(h){
+  const data=hourly.slice(0,h);
+  const note=document.getElementById('hourlyNote');
+  const winNote=document.getElementById('hourlyWindowNote');
+
+  if(!data.length){note.textContent='Forecast loading…';return;}
+
+  const useLong=h>24;
+  const labels=data.map(d=>useLong?fmtHourLabelLong(d.iso):d.t);
+
+  if(h>hourly.length){
+    note.textContent=`Showing ${hourly.length}h · ${h}h selected`;
+    winNote.textContent=`${hourly.length}h available`;
+  } else {
+    note.textContent='';
+    winNote.textContent=`${h}h window`;
+  }
+
+  const temps=data.map(d=>d.temp);
+  const tBounds=niceBounds(temps,0.15,5);
+  if(tBounds&&Math.min(...temps)>27) tBounds.min=Math.min(tBounds.min,25);
+
+  // Color PoP bars by precip type
+  const hasSnowHours=data.some(d=>d.precipType==='snow');
+  const hasMixHours=data.some(d=>d.precipType==='mix'||d.precipType==='ice');
+  const popColors=data.map(d=>{
+    if(!d.pop||d.pop===0) return 'rgba(91,156,246,0.08)';
+    switch(d.precipType){
+      case 'snow':    return 'rgba(168,216,240,0.6)';
+      case 'ice':     return 'rgba(253,230,138,0.7)';
+      case 'mix':     return 'rgba(240,164,41,0.55)';
+      case 'thunder': return 'rgba(155,114,248,0.6)';
+      default:        return 'rgba(91,156,246,0.55)';
+    }
+  });
+
+  // Update legend to show types present
+  const legend=document.getElementById('hourlyLegend');
+  let legendHtml=`<span><span class="lsw" style="background:var(--accent)"></span>Rain PoP % (left)</span>`;
+  if(hasSnowHours) legendHtml+=`<span><span class="lsw" style="background:var(--snow)"></span>Snow PoP</span>`;
+  if(hasMixHours) legendHtml+=`<span><span class="lsw" style="background:var(--warn)"></span>Mix/Ice PoP</span>`;
+  legendHtml+=`<span><span class="lsw" style="background:var(--freeze)"></span>Temp °F (right)</span>`;
+  legendHtml+=`<span><span style="display:inline-block;width:14px;height:0;border-top:1.5px dashed rgba(96,196,248,0.6);vertical-align:middle;margin-right:3px"></span>32°F</span>`;
+  if(hasMixHours) legendHtml+=`<span><span style="display:inline-block;width:10px;height:8px;background:rgba(240,164,41,0.12);border-radius:1px;vertical-align:middle;margin-right:3px"></span>Mix zone 28–35°F</span>`;
+  legendHtml+=`<span id="hourlyWindowNote" style="color:var(--dim2)"></span>`;
+  legend.innerHTML=legendHtml;
+  // restore window note
+  const wn=document.getElementById('hourlyWindowNote');
+  if(wn) wn.textContent=h>hourly.length?`${hourly.length}h available`:`${h}h window`;
+
+  if(hourlyChart){hourlyChart.destroy();hourlyChart=null;}
+  hourlyChart=new Chart(document.getElementById('cHourly'),{
+    data:{labels,datasets:[
+      {type:'bar',label:'PoP %',data:data.map(d=>d.pop),
+       backgroundColor:popColors,borderWidth:0,yAxisID:'yL',order:2},
+      {type:'line',label:'Temp °F',data:temps,borderColor:'#60c4f8',borderWidth:2,
+       pointRadius:0,borderDash:[4,3],fill:false,tension:0.3,yAxisID:'yR',order:1}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,callbacks:{
+        label:c=>{
+          if(c.dataset.label==='PoP %'){
+            const pt=data[c.dataIndex]?.precipType||'rain';
+            const typeStr=pt==='snow'?' ❄️':pt==='ice'?' 🧊':pt==='mix'?' ⚠️mix':pt==='thunder'?' ⛈️':'';
+            return`PoP: ${c.raw}%${typeStr}`;
+          }
+          return`Temp: ${c.raw}°F`;
+        }
+      }}},
+      scales:{
+        x:{ticks:{font:TF,autoSkip:false,maxRotation:0,callback:(v,i)=>labels[i]||''},grid:{color:GRD}},
+        yL:{min:0,max:100,position:'left',ticks:{callback:v=>v+'%',font:TF},grid:{color:GRD}},
+        yR:Object.assign({position:'right',ticks:{callback:v=>v+'°',font:TF},grid:{display:false}},tBounds||{min:15,max:55})
+      }},
+    plugins:[freezeLine]
+  });
+}
+
+let qpfChart=null;
+let snowQpfBuckets=[];  // parallel array to qpfBuckets
+
+function renderQpf(){
+  const data=qpfBuckets;
+  const hasRain=data.some(b=>b.v>0);
+  const hasSnow=snowQpfBuckets.some(b=>b>0);
+  const hasData=hasRain||hasSnow;
+  document.getElementById('cQPFEmpty').style.display=hasData?'none':'flex';
+  // Show snow legend item
+  const snowLegend=document.getElementById('snowLegendItem');
+  if(snowLegend) snowLegend.style.display=hasSnow?'inline':'none';
+
+  if(qpfChart){qpfChart.destroy();qpfChart=null;}
+
+  const datasets=[{
+    label:'Rain QPF',data:data.map(b=>b.v),
+    backgroundColor:data.map(b=>b.v>=0.3?'rgba(240,96,96,0.7)':b.v>=0.1?'rgba(240,164,41,0.7)':'rgba(42,48,80,0.7)'),
+    borderWidth:0,stack:'precip'
+  }];
+
+  if(hasSnow){
+    datasets.push({
+      label:'Snow',data:snowQpfBuckets,
+      backgroundColor:'rgba(168,216,240,0.65)',
+      borderWidth:0,stack:'precip'
+    });
+  }
+
+  qpfChart=new Chart(document.getElementById('cQPF'),{
+    type:'bar',data:{labels:data.map(b=>b.l),datasets},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{
+        label:c=>(c.dataset.label==='Snow'?'❄️ Snow: ':'💧 Rain: ')+c.raw.toFixed(3)+'"'
+      }}},
+      scales:{
+        x:{ticks:{font:{size:9},maxRotation:45,minRotation:35},grid:{color:GRD}},
+        y:{min:0,max:hasData?Math.max(0.5,Math.ceil(Math.max(...data.map(b=>b.v),...snowQpfBuckets)*4)/4):0.5,
+           ticks:{callback:v=>v.toFixed(2)+'"',font:TF},grid:{color:GRD},stacked:true}
+      }}
+  });
+}
+
+let tempChart=null;
+function renderTempTrajectory(){
+  const data=hourly;
+  if(!data.length)return;
+  const temps=data.map(h=>h.temp);
+  const tBounds=niceBounds(temps,0.15,5);
+  if(tBounds&&Math.min(...temps)>27) tBounds.min=Math.min(tBounds.min,25);
+  if(tempChart){tempChart.destroy();tempChart=null;}
+  tempChart=new Chart(document.getElementById('cTemp'),{
+    type:'line',
+    data:{labels:data.map(h=>fmtHourLabelLong(h.iso)),datasets:[{
+      label:'Temp',data:temps,borderColor:'#f0a429',borderWidth:2.5,pointRadius:0,
+      fill:{target:'origin',above:'rgba(240,164,41,0.06)'},tension:0.3
+    }]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.raw+'°F'}}},
+      scales:{
+        x:{ticks:{font:TF,autoSkip:false,maxRotation:0,callback:(v,i)=>fmtHourLabelLong(data[i]&&data[i].iso)||''},grid:{color:GRD}},
+        y:Object.assign({ticks:{callback:v=>v+'°',font:TF},grid:{color:GRD}},tBounds||{min:20,max:80})
+      }},
+    plugins:[{id:'yz',beforeDraw(c){
+      const{ctx,chartArea:ca,scales:{y}}=c;if(!ca||!y)return;
+      ctx.save();
+      // Freeze zone below 32
+      const y32=y.getPixelForValue(32);
+      if(y32>=ca.top&&y32<=ca.bottom){
+        ctx.fillStyle='rgba(168,216,240,0.07)';
+        ctx.fillRect(ca.left,y32,ca.right-ca.left,ca.bottom-y32);
+      }
+      // Mix zone 28-35
+      const y35=y.getPixelForValue(35);
+      const y28=y.getPixelForValue(28);
+      if(y35>=ca.top&&y28<=ca.bottom){
+        const bandTop=Math.max(y35,ca.top);
+        const bandBot=Math.min(y28,ca.bottom);
+        if(bandBot>bandTop){
+          ctx.fillStyle='rgba(240,164,41,0.05)';
+          ctx.fillRect(ca.left,bandTop,ca.right-ca.left,bandBot-bandTop);
         }
       }
-    }
-  }
-
-  html+=buildSourcesHTML(node);
-
-  if(node.aq&&node.aq.current){
-    var cur=node.aq.current,aqi=cur.us_aqi;
-    var aqC=aqi<=50?"var(--success)":aqi<=100?"var(--warn)":aqi<=150?"var(--orange)":"var(--danger)";
-    var aqL=aqi<=50?"Good":aqi<=100?"Moderate":aqi<=150?"Unhealthy/Sensitive":aqi<=200?"Unhealthy":"Very Unhealthy";
-    var aqContent='<div class="pills">';
-    aqContent+=pill("US AQI",aqi,"",aqL);
-    if(cur.pm2_5!=null)aqContent+=pill("PM2.5",Math.round(cur.pm2_5*10)/10," μg/m³","");
-    if(cur.pm10!=null)aqContent+=pill("PM10",Math.round(cur.pm10)," μg/m³","");
-    if(cur.ozone!=null)aqContent+=pill("O₃",Math.round(cur.ozone)," μg/m³","");
-    if(cur.dust!=null&&cur.dust>0)aqContent+=pill("Dust",Math.round(cur.dust)," μg/m³","");
-    aqContent+='</div>';
-    html+=buildCollapsible("aq-"+node.id,"Air Quality",'<span class="badge" style="background:'+aqC+'22;color:'+aqC+'">AQI '+aqi+' · '+aqL+'</span>',"",aqContent);
-  }
-
-  if(STATE.extraProducts.spc&&STATE.spcData){
-    var SPC_C={HIGH:"var(--danger)",MDT:"var(--orange)",ENH:"var(--warn)",SLGT:"#facc15",MRGL:"var(--success)",TSTM:"var(--dim)"};
-    ["day1","day2"].forEach(function(key){
-      var d=STATE.spcData[key];if(!d)return;
-      var col=SPC_C[d.max_risk]||"var(--dim)";
-      var spcContent='<pre class="text-block">'+esc(d.text)+'</pre>';
-      var spcBadge='<span class="badge" style="background:'+col+'22;color:'+col+'">'+d.max_risk+'</span><span class="badge badge-fresh">'+ago(d.issued)+'</span>';
-      html+=buildCollapsible("spc-"+key+"-"+node.id,"SPC "+(key==="day1"?"Day 1":"Day 2")+" Outlook",spcBadge,"",spcContent);
-    });
-  }
-
-  if(nws&&nws.hourly&&nws.hourly.length>2){
-    var cnt=Math.min(nws.hourly.length,STATE.hourlyWindow);
-    var temps=[],prec=[],wnds=[];
-    for(var ci=0;ci<cnt;ci++){temps.push(nws.hourly[ci].temperature);prec.push((nws.hourly[ci].probabilityOfPrecipitation&&nws.hourly[ci].probabilityOfPrecipitation.value)||0);wnds.push(parseInt(nws.hourly[ci].windSpeed)||0);}
-    var chartsContent='<div class="chart-row"><div class="chart-box"><h3>Temperature ('+cnt+'h)</h3>'+spark(temps,{color:"var(--danger)",fill:true,unit:"°"})+'</div><div class="chart-box"><h3>Precip Probability</h3>'+spark(prec,{color:"var(--accent)",fill:true,unit:"%"})+'</div><div class="chart-box"><h3>Wind</h3>'+spark(wnds,{color:"var(--warn)",fill:false,unit:"mph"})+'</div></div>';
-    if(uv&&uv.hourly){
-      var omCnt=Math.min((uv.hourly.time||[]).length,STATE.hourlyWindow),extras2=[];
-      if(STATE.omVars.convective&&uv.hourly.cape)extras2.push('<div class="chart-box"><h3>CAPE J/kg</h3>'+spark(uv.hourly.cape.slice(0,omCnt),{color:"var(--orange)",fill:true,unit:" J/kg"})+'</div>');
-      if(STATE.omVars.bld&&uv.hourly.boundary_layer_height)extras2.push('<div class="chart-box"><h3>Boundary Layer (ft)</h3>'+spark(uv.hourly.boundary_layer_height.slice(0,omCnt).map(function(v){return v!=null?Math.round(v*3.281):null;}),{color:"var(--purple)",fill:false,unit:" ft"})+'</div>');
-      if(extras2.length)chartsContent+='<div class="chart-row">'+extras2.join("")+'</div>';
-    }
-    html+=buildCollapsible("charts-"+node.id,"Charts","",chartsSummary(node),chartsContent);
-  }
-
-  if(nws&&nws.hourly&&nws.hourly.length){
-    var cnt2=Math.min(nws.hourly.length,STATE.hourlyWindow);
-    var hourlyContent='<div class="hourly-scroll"><div class="hourly-row">';
-    for(var hi=0;hi<cnt2;hi++){
-      var h=nws.hourly[hi],ht=new Date(h.startTime),isNow=hi===0,dayB=ht.getHours()===0&&hi>0;
-      var pp=(h.probabilityOfPrecipitation&&h.probabilityOfPrecipitation.value)||0;
-      var huv=null,hqpf=null;
-      if(uv&&uv.hourly){var hk=h.startTime.slice(0,13);for(var uj=0;uj<(uv.hourly.time||[]).length;uj++){if(uv.hourly.time[uj].indexOf(hk)===0){huv=uv.hourly.uv_index[uj];if(STATE.omVars.qpf&&uv.hourly.precipitation)hqpf=uv.hourly.precipitation[uj];break;}}}
-      hourlyContent+='<div class="hour-card'+(isNow?" now":"")+(dayB?" day-boundary":"")+'"><div class="htime">'+(isNow?"NOW":ht.toLocaleString("en-US",{hour:"numeric",hour12:true}))+'</div>';
-      if(dayB)hourlyContent+='<div class="day-label">'+ht.toLocaleString("en-US",{weekday:"short"}).toUpperCase()+'</div>';
-      hourlyContent+='<div class="htemp">'+h.temperature+'°</div><div class="hdesc">'+esc(h.shortForecast)+'</div><div class="hwind">'+h.windSpeed+'</div>';
-      if(pp>0)hourlyContent+='<div class="hprecip">💧'+pp+'%</div>';
-      if(hqpf!=null&&hqpf>0)hourlyContent+='<div class="hprecip" style="color:var(--success)">≈'+hqpf.toFixed(2)+'"</div>';
-      if(huv!=null&&huv>0)hourlyContent+='<div style="font-size:9px;font-family:var(--mono);color:'+(huv<3?"var(--success)":huv<6?"var(--warn)":"var(--danger)")+';margin-top:2px">UV '+Math.round(huv*10)/10+'</div>';
-      hourlyContent+='</div>';
-    }
-    hourlyContent+='</div></div>';
-    html+=buildCollapsible("hourly-"+node.id,"Hourly",'<span class="badge badge-fresh">'+ago(nws.hourlyUpdated)+'</span><span class="badge" style="background:var(--border)22;color:var(--dim)">'+cnt2+' hrs</span>',hourlySummary(node),hourlyContent);
-  }
-
-  if(nws&&nws.forecast&&nws.forecast.length){
-    var dlabels=[],dhighs=[],dlows=[];
-    for(var fi=0;fi<nws.forecast.length;fi+=2){var dp=nws.forecast[fi],np=nws.forecast[fi+1];dlabels.push(dp.name);if(dp.isDaytime){dhighs.push(dp.temperature);dlows.push(np?np.temperature:null);}else{dhighs.push(null);dlows.push(dp.temperature);}}
-    var sdContent="";
-    if(dhighs.filter(function(v){return v!=null;}).length>1){
-      sdContent+='<div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px"><div style="font-size:10px;font-family:var(--mono);color:var(--dim);margin-bottom:5px">High / Low Range';
-      if(node.climate){var cn=node.climate.today_window,cnm=node.climate.months&&node.climate.months[new Date().getMonth()];var nStr=cn?" · Normal "+cn.normal_high_f+"°/"+cn.normal_low_f+"°F":cnm?" · Normal "+cnm.normal_high_f+"°/"+cnm.normal_low_f+"°F":"";if(nStr)sdContent+=nStr;}
-      sdContent+='</div>'+barChart(dlabels,dhighs,dlows)+'</div>';
-    }
-    sdContent+='<div class="forecast-rows">';
-    for(var fj=0;fj<nws.forecast.length;fj++){
-      var fp=nws.forecast[fj],pp2=(fp.probabilityOfPrecipitation&&fp.probabilityOfPrecipitation.value)||0;
-      var dStr="";
-      if(node.climate){var normRef=null;if(node.climate.today_window&&fj<8)normRef=fp.isDaytime!==false?node.climate.today_window.normal_high_f:node.climate.today_window.normal_low_f;else if(node.climate.months){var cm=node.climate.months[new Date().getMonth()];if(cm)normRef=fp.isDaytime!==false?cm.normal_high_f:cm.normal_low_f;}if(normRef!=null&&fp.temperature!=null){var delta=Math.round(fp.temperature-normRef);dStr='<span style="font-size:10px;color:'+(delta>0?"var(--danger)":delta<0?"var(--accent)":"var(--dim)")+';font-family:var(--mono);flex-shrink:0;width:40px;text-align:right">'+(delta>0?"+":"")+delta+'°Δ</span>';}}
-      sdContent+='<div class="forecast-row"><div class="fname">'+esc(fp.name)+'</div><div class="ftemp">'+fp.temperature+'°<span class="unit">'+fp.temperatureUnit+'</span></div><div class="fwind">'+fp.windSpeed+' '+fp.windDirection+'</div>'+dStr+(pp2>0?'<span class="badge badge-precip">💧'+pp2+'%</span>':'')+'<div class="fshort">'+esc(fp.shortForecast)+'</div></div>';
-    }
-    sdContent+='</div>';
-    html+=buildCollapsible("sevenday-"+node.id,"7-Day",'<span class="badge badge-fresh">'+ago(nws.forecastUpdated)+'</span>',sevendaySummary(node),sdContent);
-  }
-
-  if(node.gridpoint&&node.gridpoint.qpf_periods&&node.gridpoint.qpf_periods.length){
-    var gp=node.gridpoint,qbd={},tbd={},sbd={};
-    gp.qpf_periods.forEach(function(p){var d=p.start.slice(0,10);qbd[d]=(qbd[d]||0)+(p.precip_in||0);});
-    (gp.thunder_prob||[]).forEach(function(p){var d=p.start.slice(0,10);tbd[d]=Math.max(tbd[d]||0,p.prob_pct||0);});
-    (gp.snowfall_periods||[]).forEach(function(p){var d=p.start.slice(0,10);sbd[d]=(sbd[d]||0)+(p.snow_in||0);});
-    var hasT=Object.keys(tbd).length>0,hasS=gp.snowfall_periods&&gp.snowfall_periods.length>0;
-    var qpfContent='<div style="overflow-x:auto"><table class="climate-table"><thead><tr><th style="text-align:left">Date (UTC)</th><th>QPF</th>';
-    if(hasT)qpfContent+='<th>Max ⚡%</th>';if(hasS)qpfContent+='<th>Snow</th>';
-    qpfContent+='</tr></thead><tbody>';
-    var today2=new Date().toISOString().slice(0,10);
-    Object.keys(qbd).sort().slice(0,8).forEach(function(day){
-      var tot=Math.round(qbd[day]*1000)/1000,isT=(day===today2);
-      qpfContent+='<tr'+(isT?' class="cur"':'')+'><td style="text-align:left'+(isT?';font-weight:700':'')+'">'+day.slice(5)+(isT?' <span style="color:var(--dim);font-size:10px">(today)</span>':'')+'</td>';
-      qpfContent+='<td style="color:'+(tot>1.5?"var(--danger)":tot>0.5?"var(--accent)":tot>0?"inherit":"var(--dim)")+';font-weight:'+(tot>1.5?"700":"400")+'">'+(tot>0?tot.toFixed(3)+'"':"—")+'</td>';
-      if(hasT){var tp=tbd[day]||0;qpfContent+='<td style="color:'+(tp>=40?"var(--danger)":tp>=20?"var(--warn)":"var(--dim)")+'">'+(tp>0?tp+"%":"—")+'</td>';}
-      if(hasS){var sn=sbd[day]||0;qpfContent+='<td>'+(sn>0?sn.toFixed(2)+'"':"—")+'</td>';}
-      qpfContent+='</tr>';
-    });
-    qpfContent+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 0 2px">NWS Gridpoint QPF · authoritative · same source as NWS hourly chart · UTC day boundaries</div></div>';
-    html+=buildCollapsible("qpf-"+node.id,"NWS Gridpoint QPF",'<span class="badge" style="background:#4ade8022;color:var(--success)">Authoritative</span><span class="meta" style="font-size:10px">'+esc(gp.source)+'</span>',qpfSummary(node),qpfContent);
-  } else if(node.nws&&node.status==="ready"&&!node.gridpoint){
-    html+='<div style="margin-top:8px;font-size:11px;color:var(--dim);font-family:var(--mono)">NWS QPF: unavailable or still loading</div>';
-  }
-
-  if(nws&&nws.afd){
-    var afdContent='<pre class="text-block">'+esc(nws.afd)+'</pre>';
-    var afdSumm=nws.afd.replace(/\s+/g," ").slice(0,120)+"…";
-    html+=buildCollapsible("afd-"+node.id,"AFD — "+esc(nws.office),'<span class="badge badge-fresh">'+ago(nws.afdTime)+'</span>',afdSumm,afdContent);
-  }
-
-  if(node.hwo){
-    var hwoContent='<pre class="text-block">'+esc(node.hwo.text)+'</pre>';
-    html+=buildCollapsible("hwo-"+node.id,"HWO — "+esc(node.hwo.office),'<span class="badge badge-fresh">'+ago(node.hwo.issued)+'</span>',"Hazardous Weather Outlook",hwoContent);
-  }
-
-  if(node.ero){
-    var EROC={HIGH:"var(--danger)",ENHANCED:"var(--orange)",SLIGHT:"var(--warn)",MARGINAL:"var(--success)"};
-    var eroB=node.ero.risks.map(function(r){var c=EROC[r]||"var(--dim)";return'<span class="badge" style="background:'+c+'22;color:'+c+'">'+r.charAt(0)+r.slice(1).toLowerCase()+'</span>';}).join(" ");
-    var eroContent='<pre class="text-block">'+esc(node.ero.text)+'</pre>';
-    html+=buildCollapsible("ero-"+node.id,"WPC ERO",'<span class="badge badge-fresh">'+ago(node.ero.issued)+'</span>'+(eroB?" "+eroB:""),(node.ero.risks.length?node.ero.risks.join(", "):"No risk areas"),eroContent);
-  }
-
-  if(node.mpd){
-    var mpdContent="";
-    if(node.mpd.length){node.mpd.forEach(function(m,mi){mpdContent+='<div style="margin-bottom:8px"><div style="font-size:10px;font-family:var(--mono);color:var(--dim);margin-bottom:4px">MPD #'+(mi+1)+' · '+ago(m.issued)+'</div><pre class="text-block" style="max-height:300px">'+esc(m.text)+'</pre></div>';});}
-    else{mpdContent='<div style="font-size:12px;color:var(--dim);font-family:var(--mono)">No active discussions.</div>';}
-    var mpdBadge=node.mpd.length?'<span class="badge" style="background:var(--orange)22;color:var(--orange)">'+node.mpd.length+' active</span>':'<span class="badge badge-fresh">None active</span>';
-    html+=buildCollapsible("mpd-"+node.id,"WPC MPD",mpdBadge,(node.mpd.length?node.mpd.length+" active discussion(s)":"No active discussions"),mpdContent);
-  }
-
-  if(node.lsr){
-    var lsrContent='<pre class="text-block">'+esc(node.lsr.text)+'</pre>';
-    html+=buildCollapsible("lsr-"+node.id,"LSR — "+esc(node.lsr.office),'<span class="badge badge-fresh">'+ago(node.lsr.issued)+'</span>',"Local Storm Reports",lsrContent);
-  }
-
-  if(node.asosPrecip){
-    var aobs=node.asosPrecip.observations,asosContent="";
-    if(aobs.length){asosContent='<div style="overflow-x:auto"><table class="climate-table"><thead><tr><th style="text-align:left">Time</th><th>1hr</th><th>3hr</th><th>6hr</th><th style="text-align:left">Sky</th></tr></thead><tbody>';aobs.forEach(function(o){var hot=(o.precip_1hr_in>0||o.precip_3hr_in>0||o.precip_6hr_in>0);asosContent+='<tr'+(hot?' style="background:rgba(96,165,250,.06)"':'')+'><td style="text-align:left">'+ts(o.timestamp)+'</td><td style="color:'+(o.precip_1hr_in>0?"var(--accent)":"inherit")+'">'+(o.precip_1hr_in!=null?(o.precip_1hr_in>0?o.precip_1hr_in+'"':"trace"):"—")+'</td><td>'+(o.precip_3hr_in!=null?o.precip_3hr_in+'"':"—")+'</td><td>'+(o.precip_6hr_in!=null?o.precip_6hr_in+'"':"—")+'</td><td style="text-align:left;color:var(--dim)">'+esc(o.sky||"")+'</td></tr>';});asosContent+='</tbody></table></div>';}
-    else{asosContent='<div style="font-size:12px;color:var(--dim);font-family:var(--mono)">No precip in last 24 obs.</div>';}
-    html+=buildCollapsible("asos-"+node.id,"ASOS Precip",'<span class="badge badge-fresh">'+aobs.length+' obs</span><span class="meta" style="font-size:10px">'+esc(node.asosPrecip.station)+'</span>',(aobs.length+" obs · "+node.asosPrecip.station),asosContent);
-  }
-
-  if(node.ecmwf&&node.ecmwf.hourly){
-    var ec=node.ecmwf.hourly,ect=ec.time||[],ecd={};
-    for(var ei=0;ei<ect.length;ei++){var eday=ect[ei].slice(0,10);if(!ecd[eday])ecd[eday]={temps:[],precip:0,maxCape:0};if(ec.temperature_2m&&ec.temperature_2m[ei]!=null)ecd[eday].temps.push(ec.temperature_2m[ei]);if(ec.precipitation&&ec.precipitation[ei]!=null&&ei%3===0)ecd[eday].precip+=ec.precipitation[ei];if(ec.cape&&ec.cape[ei]!=null&&ec.cape[ei]>ecd[eday].maxCape)ecd[eday].maxCape=ec.cape[ei];}
-    var ecContent='<div style="overflow-x:auto"><table class="climate-table"><thead><tr><th style="text-align:left">Date</th><th>High</th><th>Low</th><th>Precip (de-duped)</th>'+(ec.cape?'<th>Max CAPE</th>':'')+'</tr></thead><tbody>';
-    Object.keys(ecd).sort().slice(0,10).forEach(function(dk){
-      var dd=ecd[dk],hi=dd.temps.length?Math.round(Math.max.apply(null,dd.temps)):"—",lo=dd.temps.length?Math.round(Math.min.apply(null,dd.temps)):"—";
-      var isT=(dk===new Date().toISOString().slice(0,10));
-      ecContent+='<tr'+(isT?' class="cur"':'')+'><td style="text-align:left'+(isT?';font-weight:700':'')+'">'+dk.slice(5)+(isT?' <span style="color:var(--dim);font-size:10px">(today)</span>':'')+'</td><td style="color:var(--danger)">'+hi+'°</td><td style="color:var(--accent)">'+lo+'°</td><td style="color:'+(dd.precip>0.01?"var(--accent)":"inherit")+'">'+(dd.precip>0.005?dd.precip.toFixed(3)+'"':"—")+'</td>'+(ec.cape?'<td style="color:'+(dd.maxCape>=1000?"var(--orange)":dd.maxCape>=250?"var(--warn)":"inherit")+'">'+(dd.maxCape>=100?Math.round(dd.maxCape):"—")+'</td>':'')+'</tr>';
-    });
-    ecContent+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:5px 0 2px">ECMWF IFS · 9km · precip de-duped (stride-3, Bug 1)</div></div>';
-    html+=buildCollapsible("ecmwf-"+node.id,"ECMWF IFS",'<span class="badge" style="background:var(--purple)22;color:var(--purple)">9km · 10-day</span>',"European Centre independent model",ecContent);
-  }
-
-  if(node.ensemble&&node.ensemble.time){
-    var ens=node.ensemble,enst=ens.time||[],ensd={};
-    for(var ei2=0;ei2<enst.length;ei2++){var eday2=enst[ei2].slice(0,10);if(!ensd[eday2])ensd[eday2]={tp10:[],tmed:[],tp90:[],prmed:[],prp90:[]};if(ens.temperature_2m){if(ens.temperature_2m.p10[ei2]!=null)ensd[eday2].tp10.push(ens.temperature_2m.p10[ei2]);if(ens.temperature_2m.median[ei2]!=null)ensd[eday2].tmed.push(ens.temperature_2m.median[ei2]);if(ens.temperature_2m.p90[ei2]!=null)ensd[eday2].tp90.push(ens.temperature_2m.p90[ei2]);}if(ens.precipitation){if(ens.precipitation.median[ei2]!=null)ensd[eday2].prmed.push(ens.precipitation.median[ei2]);if(ens.precipitation.p90[ei2]!=null)ensd[eday2].prp90.push(ens.precipitation.p90[ei2]);}}
-    function ea(arr){if(!arr.length)return null;return arr.reduce(function(a,b){return a+b;},0)/arr.length;}
-    function em(arr){if(!arr.length)return null;return Math.max.apply(null,arr);}
-    var ensContent='<div style="overflow-x:auto"><table class="climate-table"><thead><tr><th style="text-align:left">Date</th><th>T p10</th><th>T med</th><th>T p90</th><th>±°</th><th>Pr med</th><th>Pr p90</th></tr></thead><tbody>';
-    Object.keys(ensd).sort().forEach(function(dk){
-      var dd=ensd[dk],tlo=ea(dd.tp10),tmed2=ea(dd.tmed),thi=ea(dd.tp90),prm=em(dd.prmed),prh=em(dd.prp90);
-      var sp=tlo!=null&&thi!=null?Math.round((thi-tlo)/2):null,isT=(dk===new Date().toISOString().slice(0,10));
-      ensContent+='<tr'+(isT?' class="cur"':'')+'><td style="text-align:left'+(isT?';font-weight:700':'')+'">'+dk.slice(5)+(isT?' <span style="color:var(--dim);font-size:10px">(today)</span>':'')+'</td><td style="color:var(--accent)">'+(tlo!=null?Math.round(tlo)+'°':"—")+'</td><td style="font-weight:600">'+(tmed2!=null?Math.round(tmed2)+'°':"—")+'</td><td style="color:var(--danger)">'+(thi!=null?Math.round(thi)+'°':"—")+'</td><td style="color:'+(sp!=null?(sp>8?"var(--danger)":sp>5?"var(--warn)":"var(--success)"):"inherit")+'">'+(sp!=null?"±"+sp+'°':"—")+'</td><td>'+(prm!=null&&prm>0.005?prm.toFixed(2)+'"':"—")+'</td><td style="color:'+(prh!=null&&prh>0.25?"var(--accent)":"inherit")+'">'+(prh!=null&&prh>0.005?prh.toFixed(2)+'"':"—")+'</td></tr>';
-    });
-    ensContent+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:5px 0 2px">±° half-spread. Green &lt;5° · Yellow &lt;8° · Red ≥8° = low confidence.</div></div>';
-    html+=buildCollapsible("ens-"+node.id,"Ensemble Spread",'<span class="badge" style="background:var(--accent)22;color:var(--accent)">'+ens.model+'</span><span class="meta" style="font-size:10px">'+ens.member_count+' members · p10/median/p90</span>',"ICON EPS uncertainty quantification",ensContent);
-  }
-
-  if(node.climate&&node.climate.months){
-    var cl=node.climate,nowM=new Date().getMonth()+1;
-    var climContent='<div style="overflow-x:auto"><table class="climate-table"><thead><tr><th>Month</th><th>Avg High</th><th>Avg Low</th><th>Avg Precip</th></tr></thead><tbody>';
-    cl.months.forEach(function(m){var isCur=(m.month===nowM);climContent+='<tr class="'+(isCur?"cur":"dimr")+'"><td>'+(isCur?'<span style="color:var(--accent)">→ </span>':'')+esc(m.month_abbr)+(isCur?' <span style="color:var(--dim);font-size:10px">(now)</span>':'')+'</td><td style="color:'+(isCur?"var(--danger)":"inherit")+'">'+(m.normal_high_f!=null?m.normal_high_f+'°F':"—")+'</td><td style="color:'+(isCur?"var(--accent)":"inherit")+'">'+(m.normal_low_f!=null?m.normal_low_f+'°F':"—")+'</td><td>'+(m.normal_precip_in!=null?m.normal_precip_in+'"':"—")+'</td></tr>';});
-    climContent+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:5px 0 2px">'+esc(cl.source)+(cl.today_window?' · Today window: '+cl.today_window.normal_high_f+'°/'+cl.today_window.normal_low_f+'°F (±3d, n='+cl.today_window.sample_size+')':"")+'</div></div>';
-    html+=buildCollapsible("climate-"+node.id,"Climate Normals",'<span class="badge" style="background:var(--purple)22;color:var(--purple)">'+esc(cl.period)+'</span>',climateSummary(node),climContent);
-  }
-
-  panel.innerHTML=html;
-}
-
-// ── PATCH 6: Targeted NWS-only retry ─────────────────────────────────────────
-function retryNWS(nodeId){
-  var node=null;
-  for(var i=0;i<STATE.nodes.length;i++){if(STATE.nodes[i].id===nodeId){node=STATE.nodes[i];break;}}
-  if(!node)return;
-  // Clear only NWS-dependent state; preserve OM/ERA5 which already loaded
-  node.nws=null;node.gridpoint=null;
-  node.errors=node.errors.filter(function(e){return e.indexOf("NWS")!==0;});
-  node.status="loading";
-  renderActivePanel();updateStickyBar();
-  var nwsP=fetchNodeNWS(node.lat,node.lon)
-    .then(function(d){node.nws=d;})
-    .catch(function(e){node.errors.push(e.isTimeout?"NWS: timed out":"NWS: "+e.message);});
-  nwsP.then(function(){
-    if(node.nws&&node.nws.gridId){
-      return fetchNodeGridpoint(node.nws.gridId,node.nws.gridX,node.nws.gridY)
-        .then(function(d){node.gridpoint=d;})
-        .catch(function(e){node.errors.push("NWS QPF: "+e.message);});
-    }
-  }).then(function(){
-    node.status=(node.nws||node.uv)?"ready":"error";
-    renderNodeList();renderTabs();renderActivePanel();updateStickyBar();
+      ctx.restore();
+    }},freezeLine]
   });
 }
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-document.getElementById("input-location").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();addNode();}});
-document.getElementById("presets").innerHTML=PRESETS.map(function(p,i){return'<button class="preset-btn" onclick="addPreset('+i+')">'+esc(p.label)+'</button>';}).join("");
-updateSettingsSummary();
-renderNodeList();renderTabs();fetchAllNodes();
-</script>
+document.getElementById('durHourly').addEventListener('click',e=>{
+  const b=e.target.closest('.dur-btn');if(!b)return;
+  document.querySelectorAll('#durHourly .dur-btn').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  hourlyH=parseInt(b.dataset.h);
+  renderHourly(hourlyH);
+});
+
+// ════════════════════════════════════════════════════
+// CSV + STATION CHARTS
+// ════════════════════════════════════════════════════
+let precipChart=null,windChart=null,waterShortChart=null,lakeChart=null,airTempChart=null;
+let allRows=[],activeH=24,lakH=720;
+
+async function loadCSV(){
+  try{
+    const r=await fetch('station_log.csv',{cache:'no-store'});
+    const txt=await r.text();
+    const lines=txt.trim().split('\n');
+    if(lines.length<2)return;
+    const hdrs=lines[0].split(',');
+    const ix=h=>hdrs.indexOf(h);
+    const iTs=ix('capture_ts_local'),iTemp=ix('temperature_f'),iHum=ix('humidity_pct'),
+          iRate=ix('rain_rate_in_hr'),iDay=ix('rain_day_in'),iStorm=ix('rain_storm_in'),
+          iBaro=ix('barometer_inhg'),iWind=ix('wind_speed_mph'),iGust=ix('wind_10min_gust_mph'),
+          iWtr=ix('water_temp_avg_f'),iWtrH=ix('water_temp_high_f'),iWtrL=ix('water_temp_low_f'),
+          iMemHigh=ix('memorial_wind_high_mph'),iMemAvg=ix('memorial_wind_avg_mph'),
+          iMemDir=ix('memorial_wind_high_dir_deg');
+    allRows=[];
+    for(let i=1;i<lines.length;i++){
+      const c=lines[i].split(',');if(c.length<5)continue;
+      const ts=new Date(c[iTs]);if(isNaN(ts))continue;
+      allRows.push({ts,
+        temp:parseFloat(c[iTemp])||null,hum:parseFloat(c[iHum])||null,
+        rate:isNaN(parseFloat(c[iRate]))?null:parseFloat(c[iRate]),
+        day:isNaN(parseFloat(c[iDay]))?null:parseFloat(c[iDay]),
+        storm:isNaN(parseFloat(c[iStorm]))?null:parseFloat(c[iStorm]),
+        baro:parseFloat(c[iBaro])||null,
+        wind:parseFloat(c[iWind])||null,
+        gust:parseFloat(c[iGust])||null,
+        water:parseFloat(c[iWtr])||null,
+        waterH:parseFloat(c[iWtrH])||null,
+        waterL:parseFloat(c[iWtrL])||null,
+        memHigh:isNaN(parseFloat(c[iMemHigh]))?null:parseFloat(c[iMemHigh]),
+        memAvg:isNaN(parseFloat(c[iMemAvg]))?null:parseFloat(c[iMemAvg]),
+        memDir:isNaN(parseFloat(c[iMemDir]))?null:parseFloat(c[iMemDir]),
+      });
+    }
+    allRows.sort((a,b)=>a.ts-b.ts);
+    if(allRows.length){
+      const L=allRows[allRows.length-1];
+      applyLiveAge(L.ts);
+
+      const f=(v,u,d=1)=>v!=null&&!isNaN(v)?`${v.toFixed(d)}<span class="unit">${u}</span>`:'—';
+
+      // Zone 2 live grid
+      document.getElementById('st-temp').innerHTML=f(L.temp,'°F');
+      document.getElementById('st-hum').innerHTML=f(L.hum,'%',0);
+      document.getElementById('st-rate').innerHTML=f(L.rate,'in/hr',2);
+      document.getElementById('st-storm').innerHTML=f(L.storm,'"',2);
+      document.getElementById('st-baro').innerHTML=f(L.baro,'inHg',3);
+      const windStr=(L.wind!=null?L.wind.toFixed(0):'—')+' / '+(L.gust!=null?L.gust.toFixed(0):'—')+' mph';
+      document.getElementById('st-windgust').textContent=windStr;
+      document.getElementById('st-water').innerHTML=L.water?f(L.water,'°F'):'—';
+      document.getElementById('liveDay').innerHTML=f(L.day,'"',2);
+
+      // Rain quick stats bottom of zone 2
+      document.getElementById('liveRate').textContent=(L.rate??0).toFixed(2)+' in/hr';
+      document.getElementById('liveRateSub').textContent=L.rate>0?'⛆ Active rain':'No rain';
+      document.getElementById('liveDaySub2').innerHTML=f(L.storm,'"',2);
+      document.getElementById('liveDaySub').textContent='storm total';
+
+      // Memorial Field
+      if(L.memHigh!=null||L.memAvg!=null){
+        document.getElementById('memSection').style.display='block';
+        document.getElementById('memWindAvg').textContent=L.memAvg!=null?L.memAvg.toFixed(0)+' mph':'—';
+        document.getElementById('memWindHigh').textContent=L.memHigh!=null?L.memHigh.toFixed(0)+' mph':'—';
+        document.getElementById('memWindDir').textContent=L.memDir!=null?compassFromDeg(L.memDir):'—';
+      }
+    }
+    renderStation(activeH);
+    renderLake(lakH);
+  }catch(e){
+    console.warn('CSV:',e);
+    document.getElementById('stationNote').textContent='Station CSV loading…';
+  }
+}
+
+function filterRows(h){const c=Date.now()-h*3600000;return allRows.filter(r=>r.ts>=c);}
+
+function buildLabels(rows,h){
+  const step=Math.max(1,Math.floor(rows.length/20));
+  const longRange=h>=168;
+  return rows.map((r,i)=>{
+    if(i%step!==0)return'';
+    if(longRange)return r.ts.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    return r.ts.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true});
+  });
+}
+
+function renderStation(h){
+  const rows=filterRows(h);
+  const note=document.getElementById('stationNote');
+  note.textContent=rows.length
+    ?`${rows.length} captures · ${(rows.length*5/60).toFixed(1)}h of data in window`
+    :`No data in ${h<24?h+'h':Math.round(h/24)+'d'} window yet — station capture running every 5 min.`;
+  const labels=buildLabels(rows,h);
+
+  const rateData=rows.map(r=>r.rate);
+  const dayData=rows.map(r=>r.day);
+  const hasPrecip=rateData.some(v=>v>0)||dayData.some(v=>v>0);
+  document.getElementById('cPrecipEmpty').style.display=hasPrecip?'none':'flex';
+  const dayBounds=niceBounds(dayData,0.2,0.25,0);
+  const rateMax=Math.max(...rateData.filter(v=>v!=null),0);
+  const rateSnaps=[0.5,1,2,4,6,10];
+  const rateMaxSnap=rateSnaps.find(s=>s>=rateMax*1.2)||Math.ceil(rateMax*1.2);
+
+  if(precipChart){precipChart.destroy();precipChart=null;}
+  precipChart=new Chart(document.getElementById('cPrecip'),{
+    data:{labels,datasets:[
+      {type:'bar',label:'Rain day',data:dayData,backgroundColor:'rgba(91,156,246,0.55)',borderWidth:0,yAxisID:'y',order:2},
+      {type:'line',label:'Rain rate',data:rateData,borderColor:'#f06060',borderWidth:2,pointRadius:0,spanGaps:true,tension:0.2,yAxisID:'y1',order:1}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,callbacks:{label:c=>{
+        if(c.dataset.label==='Rain rate')return'Rate: '+(c.raw??0).toFixed(2)+' in/hr';
+        return'Rain day: '+(c.raw??0).toFixed(2)+'"';
+      }}}},
+      scales:{
+        x:{ticks:{font:{size:9},autoSkip:false,maxRotation:0},grid:{color:GRD}},
+        y:Object.assign({position:'left',ticks:{callback:v=>v.toFixed(2)+'"',font:TF},grid:{color:GRD}},dayBounds||{min:0,max:0.5}),
+        y1:{min:0,max:rateMaxSnap,position:'right',ticks:{callback:v=>v.toFixed(2),font:TF},grid:{display:false}}
+      }}
+  });
+
+  const gustData=rows.map(r=>r.gust);
+  const windData=rows.map(r=>r.wind);
+  const windBounds=niceBounds([...gustData,...windData],0.15,5,0);
+  if(windChart){windChart.destroy();windChart=null;}
+  windChart=new Chart(document.getElementById('cWind'),{
+    data:{labels,datasets:[
+      {type:'line',label:'Gust',data:gustData,borderColor:'#f0a429',borderWidth:2,pointRadius:0,spanGaps:true,tension:0.2,fill:{target:'origin',above:'rgba(240,164,41,0.05)'}},
+      {type:'line',label:'Wind',data:windData,borderColor:'rgba(240,164,41,0.5)',borderWidth:1.5,borderDash:[3,3],pointRadius:0,spanGaps:true,tension:0.2}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,callbacks:{label:c=>c.dataset.label+': '+(c.raw??0).toFixed(0)+' mph'}}},
+      scales:{
+        x:{ticks:{font:{size:9},autoSkip:false,maxRotation:0},grid:{color:GRD}},
+        y:Object.assign({position:'left',ticks:{callback:v=>v+' mph',font:TF},grid:{color:GRD}},windBounds||{min:0,max:20})
+      }}
+  });
+
+  const waterData=rows.map(r=>r.water);
+  const waterValid=waterData.filter(v=>v!=null&&!isNaN(v));
+  document.getElementById('cWaterShortEmpty').style.display=waterValid.length?'none':'flex';
+  const waterBounds=niceBounds(waterData,0.2,1);
+  if(waterShortChart){waterShortChart.destroy();waterShortChart=null;}
+  waterShortChart=new Chart(document.getElementById('cWaterShort'),{
+    data:{labels,datasets:[
+      {type:'line',label:'Water',data:waterData,borderColor:'#7dd3fc',borderWidth:2.5,pointRadius:0,spanGaps:true,tension:0.3,fill:{target:'origin',above:'rgba(125,211,252,0.06)'}}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,callbacks:{label:c=>'Water: '+(c.raw??0).toFixed(1)+'°F'}}},
+      scales:{
+        x:{ticks:{font:{size:9},autoSkip:false,maxRotation:0},grid:{color:GRD}},
+        y:Object.assign({position:'left',ticks:{callback:v=>v.toFixed(1)+'°',font:TF},grid:{color:GRD}},waterBounds||{min:30,max:80})
+      }}
+  });
+
+  // Air temperature chart
+  const tempData=rows.map(r=>r.temp);
+  const tempBounds=niceBounds(tempData,0.15,5);
+  if(tempBounds&&Math.min(...tempData.filter(v=>v!=null))>27) tempBounds.min=Math.min(tempBounds.min,25);
+  if(airTempChart){airTempChart.destroy();airTempChart=null;}
+  airTempChart=new Chart(document.getElementById('cAirTemp'),{
+    type:'line',
+    data:{labels,datasets:[{
+      label:'Air temp',data:tempData,
+      borderColor:'#f0a429',borderWidth:2,pointRadius:0,spanGaps:true,tension:0.3,
+      fill:{target:'origin',above:'rgba(240,164,41,0.05)'}
+    }]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,callbacks:{label:c=>'Temp: '+(c.raw??0).toFixed(1)+'°F'}}},
+      scales:{
+        x:{ticks:{font:{size:9},autoSkip:false,maxRotation:0},grid:{color:GRD}},
+        y:Object.assign({position:'left',ticks:{callback:v=>v+'°',font:TF},grid:{color:GRD}},tempBounds||{min:15,max:100})
+      }},
+    plugins:[{id:'at32',beforeDraw(c){
+      const{ctx,chartArea:ca,scales:{y}}=c;if(!ca||!y)return;
+      const y32=y.getPixelForValue(32);if(y32<ca.top||y32>ca.bottom)return;
+      ctx.save();
+      ctx.fillStyle='rgba(168,216,240,0.07)';
+      ctx.fillRect(ca.left,y32,ca.right-ca.left,ca.bottom-y32);
+      ctx.strokeStyle='rgba(96,196,248,0.4)';ctx.setLineDash([5,4]);ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(ca.left,y32);ctx.lineTo(ca.right,y32);ctx.stroke();
+      ctx.setLineDash([]);ctx.fillStyle='rgba(96,196,248,0.55)';ctx.font='9px monospace';
+      ctx.fillText('32°F',ca.right-28,y32-4);
+      ctx.restore();
+    }}]
+  });
+}
+
+function renderLake(h){
+  const rows=filterRows(h).filter(r=>r.water!=null&&!isNaN(r.water));
+  const note=document.getElementById('lakeNote');
+  if(rows.length<2){
+    note.textContent=`Lake temp: ${rows.length} readings available. Meaningful trends visible after 7+ days.`;
+    if(lakeChart){lakeChart.destroy();lakeChart=null;}
+    return;
+  }
+  note.textContent=`${rows.length} water temp readings in window`;
+  const step=Math.max(1,Math.floor(rows.length/24));
+  const labels=rows.map((r,i)=>i%step===0?r.ts.toLocaleDateString('en-US',{month:'short',day:'numeric'}):'');
+  const all=[...rows.map(r=>r.water),...rows.map(r=>r.waterH),...rows.map(r=>r.waterL)];
+  const lakeBounds=niceBounds(all,0.15,1);
+  if(lakeChart){lakeChart.destroy();lakeChart=null;}
+  lakeChart=new Chart(document.getElementById('cLake'),{
+    data:{labels,datasets:[
+      {type:'line',label:'Avg',data:rows.map(r=>r.water),borderColor:'#7dd3fc',borderWidth:2.5,pointRadius:0,tension:0.3,yAxisID:'y'},
+      {type:'line',label:'Hi',data:rows.map(r=>r.waterH),borderColor:'rgba(125,211,252,0.35)',borderWidth:1,pointRadius:0,fill:'+1',backgroundColor:'rgba(125,211,252,0.1)',tension:0.3,yAxisID:'y'},
+      {type:'line',label:'Lo',data:rows.map(r=>r.waterL),borderColor:'rgba(125,211,252,0.35)',borderWidth:1,pointRadius:0,fill:false,tension:0.3,yAxisID:'y'}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{mode:'index',intersect:false,callbacks:{label:c=>c.dataset.label+': '+(c.raw??0).toFixed(1)+'°F'}}},
+      scales:{
+        x:{ticks:{font:{size:9},autoSkip:false,maxRotation:0},grid:{color:GRD}},
+        y:Object.assign({ticks:{callback:v=>v+'°',font:TF},grid:{color:GRD}},lakeBounds||{min:32,max:80})
+      }}
+  });
+}
+
+document.getElementById('durMain').addEventListener('click',e=>{
+  const b=e.target.closest('.dur-btn');if(!b)return;
+  document.querySelectorAll('#durMain .dur-btn').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');activeH=parseInt(b.dataset.h);renderStation(activeH);
+});
+document.getElementById('durLake').addEventListener('click',e=>{
+  const b=e.target.closest('.dur-btn');if(!b)return;
+  document.querySelectorAll('#durLake .dur-btn').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');lakH=parseInt(b.dataset.h);renderLake(lakH);
+});
+
+// ════════════════════════════════════════════════════
+// INIT — staleness applied immediately on load
+// ════════════════════════════════════════════════════
+loadForecast();
+loadCSV();
+setInterval(loadForecast,5*60*1000);
+setInterval(loadCSV,5*60*1000);
+setInterval(()=>{
+  applySnapshotAge();
+  if(allRows.length) applyLiveAge(allRows[allRows.length-1].ts);
+},60*1000);</script>
 </body>
 </html>
