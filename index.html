@@ -6,15 +6,17 @@
 <title>Weather Station v4</title>
 <!--
   v4.19.2 wind artifact fix (2026-04-09)
+  v4.19.3 canonical color palette sync (2026-04-21)
   - NWS /points cached in localStorage (24h TTL) — eliminates primary timeout vector
   - fetchWTRetry: 1 auto-retry after 2.5s on timeout for all NWS calls
   - Timeout bumps: PTS 16s, FC 15s, OBS 10s, AFD 12s, GRID 20s
   - Multi-node NWS stagger: 350ms between nodes to avoid rate limiting
   - "Retry NWS only" button on error display — skips OM/ERA5 which already loaded
+  - Color palette synced to EGR Weather Dashboard canonical spec
 -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0f1117;--card:#181b23;--border:#2a2d38;--text:#e8e9ed;--dim:#6b7084;--accent:#60a5fa;--warn:#fbbf24;--danger:#f87171;--success:#4ade80;--purple:#a78bfa;--orange:#f97316;--mono:'JetBrains Mono','SF Mono',monospace;--body:'DM Sans','Helvetica Neue',sans-serif}
+:root{--bg:#0f1118;--surface:#13161f;--card:#1c2030;--border:#2a3048;--border2:#363d5e;--text:#f0f2f8;--dim:#8b92ad;--dim2:#646b8a;--accent:#5b9cf6;--accent2:#3b7de8;--warn:#f0a429;--danger:#f06060;--success:#3dd68c;--purple:#9b72f8;--orange:#f97316;--snow:#a8d8f0;--freeze:#60c4f8;--water:#7dd3fc;--tornado:#ef4444;--flood:#22c55e;--wind-alert:#f97316;--heat:#fb923c;--mono:'JetBrains Mono','SF Mono',monospace;--body:'DM Sans','Helvetica Neue',sans-serif}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:1.5;padding:16px 20px 80px;min-height:100vh}
 .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px}
@@ -24,9 +26,9 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .header .actions{display:flex;gap:8px;align-items:center}
 .btn{border:none;border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600;font-family:var(--mono);transition:opacity .15s}
 .btn:hover{opacity:.85}.btn:disabled{opacity:.4;cursor:wait}
-.btn-primary{background:var(--accent);color:#0f1117}
+.btn-primary{background:var(--accent);color:#0f1118}
 .btn-secondary{background:var(--card);color:var(--dim);border:1px solid var(--border)}
-.btn-export{background:var(--success);color:#0f1117;font-size:13px;padding:8px 18px}
+.btn-export{background:var(--success);color:#0f1118;font-size:13px;padding:8px 18px}
 .btn-danger{background:transparent;color:var(--danger);border:1px solid var(--danger);padding:4px 10px;font-size:11px}
 .btn-sm{padding:4px 10px;font-size:11px}
 .fetch-time{font-size:11px;color:var(--dim);font-family:var(--mono)}
@@ -47,7 +49,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .node-list{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
 .node-item{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 12px}
 .role-badge{font-size:10px;font-family:var(--mono);padding:2px 6px;border-radius:3px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;flex-shrink:0}
-.role-home{background:#60a5fa22;color:var(--accent)}.role-dest{background:#4ade8022;color:var(--success)}.role-conn{background:#fbbf2422;color:var(--warn)}.role-run{background:#a78bfa22;color:var(--purple)}
+.role-home{background:#5b9cf622;color:var(--accent)}.role-dest{background:#3dd68c22;color:var(--success)}.role-conn{background:#f0a42922;color:var(--warn)}.role-run{background:#9b72f822;color:var(--purple)}
 .node-item .node-label{flex:1;font-size:13px;font-family:var(--mono)}
 .node-item .node-coords{font-size:11px;color:var(--dim);font-family:var(--mono);flex-shrink:0}
 .node-item .node-status{font-size:11px;font-family:var(--mono);flex-shrink:0}
@@ -69,7 +71,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .ep-toggle.hint-open .ep-hint{display:block}
 .ep-info-btn{background:none;border:1px solid var(--border)88;border-radius:3px;color:var(--dim);cursor:pointer;font-size:9px;padding:1px 5px;font-family:var(--mono);line-height:1.5;flex-shrink:0;transition:all .15s;margin-left:auto}
 .ep-info-btn:hover{border-color:var(--accent);color:var(--accent)}
-#sticky-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(18,21,30,.97);border-top:1px solid var(--border);padding:9px 20px;display:flex;align-items:center;justify-content:space-between;z-index:300;gap:12px;backdrop-filter:blur(10px);flex-wrap:wrap}
+#sticky-bar{position:fixed;bottom:0;left:0;right:0;background:rgba(15,17,24,.97);border-top:1px solid var(--border);padding:9px 20px;display:flex;align-items:center;justify-content:space-between;z-index:300;gap:12px;backdrop-filter:blur(10px);flex-wrap:wrap}
 .sticky-left{display:flex;align-items:center;gap:10px;flex:1;min-width:0;cursor:pointer;user-select:none}
 .sticky-left:hover .sdots-label{color:var(--accent)}
 .sdots-label{font-size:9px;color:var(--dim);font-family:var(--mono);text-transform:uppercase;letter-spacing:.07em;flex-shrink:0;transition:color .15s}
@@ -108,19 +110,19 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .node-tab:hover{color:var(--text)}
 .node-tab.active{background:var(--bg);border-bottom-color:var(--bg);color:var(--accent);font-weight:600}
 .node-tab .tab-role{font-size:9px;text-transform:uppercase;letter-spacing:.04em;display:block;margin-top:1px}
-.errors{background:#f8717122;border:1px solid #f8717144;border-radius:6px;padding:9px 13px;margin-bottom:10px}
+.errors{background:#f0606022;border:1px solid #f0606044;border-radius:6px;padding:9px 13px;margin-bottom:10px}
 .errors div{font-size:12px;color:var(--danger);font-family:var(--mono)}
 .alert-box{border-radius:6px;padding:9px 13px;margin-bottom:7px}
-.alert-box.severe{background:#f8717122;border:1px solid #f8717144}
-.alert-box.moderate{background:#fbbf2422;border:1px solid #fbbf2444}
+.alert-box.severe{background:#f0606022;border:1px solid #f0606044}
+.alert-box.moderate{background:#f0a42922;border:1px solid #f0a42944}
 .alert-title{font-weight:700;font-size:13px}
 .alert-headline{font-size:12px;color:var(--dim);margin-top:3px}
 .alert-time{font-size:11px;color:var(--dim);font-family:var(--mono);margin-top:3px}
 .section-header{display:flex;align-items:center;gap:8px;margin-bottom:9px}
 .section-header h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;font-family:var(--mono);color:var(--dim)}
 .badge{display:inline-block;padding:2px 7px;border-radius:3px;font-size:10px;font-weight:600;font-family:var(--mono);letter-spacing:.03em;line-height:17px}
-.badge-fresh{background:#4ade8022;color:var(--success)}
-.badge-precip{background:#60a5fa22;color:var(--accent)}
+.badge-fresh{background:#3dd68c22;color:var(--success)}
+.badge-precip{background:#5b9cf622;color:var(--accent)}
 .meta{font-size:11px;color:var(--dim);font-family:var(--mono)}
 .pills{display:flex;gap:9px;flex-wrap:wrap}
 .pill{background:var(--bg);border-radius:6px;padding:9px 13px;border:1px solid var(--border);min-width:90px}
@@ -134,7 +136,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .hourly-scroll{overflow-x:auto;padding-bottom:6px}
 .hourly-row{display:flex;gap:5px;min-width:max-content}
 .hour-card{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:7px 9px;min-width:72px;text-align:center}
-.hour-card.now{background:#60a5fa18;border-color:#60a5fa44}
+.hour-card.now{background:#5b9cf618;border-color:#5b9cf644}
 .hour-card.day-boundary{border-left:2px solid var(--accent)}
 .hour-card .htime{font-size:10px;font-family:var(--mono);color:var(--dim);margin-bottom:3px}
 .hour-card .day-label{font-size:9px;font-family:var(--mono);color:var(--accent);margin-bottom:2px}
@@ -161,7 +163,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 .climate-table th:first-child{text-align:left}
 .climate-table td{padding:6px 11px;text-align:right;border-bottom:1px solid var(--border)}
 .climate-table td:first-child{text-align:left}
-.climate-table tr.cur{background:rgba(96,165,250,.06)}
+.climate-table tr.cur{background:rgba(91,156,246,.06)}
 .climate-table tr.dimr td{color:var(--dim)}
 .loading{text-align:center;padding:36px 0;color:var(--dim);font-family:var(--mono);font-size:13px}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;margin-right:5px;vertical-align:middle}
@@ -180,7 +182,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 <div class="header">
   <div>
     <h1><span class="icon">&#9672;</span> Weather Station</h1>
-    <div class="sub" id="header-sub">Multi-node data collector &middot; <span style="opacity:.5">v4.19.1</span></div>
+    <div class="sub" id="header-sub">Multi-node data collector &middot; <span style="opacity:.5">v4.19.3</span></div>
   </div>
   <div class="actions">
     <span class="fetch-time" id="fetch-time"></span>
@@ -284,7 +286,7 @@ body{font-family:var(--body);background:var(--bg);color:var(--text);line-height:
 </div>
 
 <script>
-var VERSION="4.19.2-2026-04-09";
+var VERSION="4.19.3-2026-04-21";
 var PRESETS=[
   {label:"East Grand Rapids, MI",lat:42.9464,lon:-85.6074,role:"home_base"},
   {label:"Chicago ORD",lat:41.9742,lon:-87.9073,role:"destination"},
@@ -310,11 +312,9 @@ var STATE={
 var SECTION_STATE={};
 var SETTINGS_OPEN=false;
 
-// ── PATCH 1: Bumped timeouts ──────────────────────────────────────────────────
 var T_NWS_PTS=16000,T_NWS_FC=15000,T_NWS_OBS=10000,T_NWS_AFD=12000,T_NWS_GRID=20000;
 var T_OM=12000,T_CLIMATE=20000,T_GEO=10000,T_EXTRA=12000;
 
-// ── PATCH 2: NWS /points cache (localStorage, 24h TTL) ───────────────────────
 function _nwsPtsKey(lat,lon){return 'nws_pts_'+lat.toFixed(4)+'_'+lon.toFixed(4);}
 function nwsPtsRead(lat,lon){
   try{
@@ -330,7 +330,6 @@ function nwsPtsWrite(lat,lon,data){
   catch(e){}
 }
 
-// ── PATCH 3: Retry wrapper — 1 retry after 2.5s on timeout ───────────────────
 function fetchWTRetry(url,opts,ms,delayMs){
   return fetchWT(url,opts,ms).catch(function(e){
     if(e.isTimeout){
@@ -341,7 +340,6 @@ function fetchWTRetry(url,opts,ms,delayMs){
   });
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 function ts(iso){if(!iso)return"—";return new Date(iso).toLocaleString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true,timeZoneName:"short"});}
 function ago(iso){if(!iso)return"";var m=Math.round((Date.now()-new Date(iso))/60000);if(m<1)return"just now";if(m<60)return m+"m ago";if(m<1440)return Math.round(m/60)+"h ago";return Math.round(m/1440)+"d ago";}
 function compass(d){if(d==null)return"—";return["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(d/22.5)%16];}
@@ -365,7 +363,6 @@ function fetchWT(url,opts,ms){
     .catch(function(e){clearTimeout(timer);if(e.name==="AbortError"){var err=new Error("Timeout "+ms/1000+"s");err.isTimeout=true;throw err;}throw e;});
 }
 
-// ── Settings UI helpers ───────────────────────────────────────────────────────
 function toggleSettings(){
   SETTINGS_OPEN=!SETTINGS_OPEN;
   var panel=document.getElementById("settings-panel");
@@ -397,7 +394,6 @@ function toggleHint(id){
   if(el)el.classList.toggle("hint-open");
 }
 
-// ── Section collapse ──────────────────────────────────────────────────────────
 function toggleSection(id){
   SECTION_STATE[id]=!SECTION_STATE[id];
   var el=document.getElementById("cs-"+id);
@@ -416,7 +412,6 @@ function buildCollapsible(id,title,badgesHtml,summary,content){
     '</div>';
 }
 
-// ── Section summary generators ────────────────────────────────────────────────
 function chartsSummary(node){
   var nws=node.nws;if(!nws||!nws.hourly||!nws.hourly.length)return"no data";
   var hrs=Math.min(nws.hourly.length,STATE.hourlyWindow);
@@ -451,13 +446,11 @@ function climateSummary(node){
   return m.month_name+": "+m.normal_high_f+"°/"+m.normal_low_f+"°F · "+m.normal_precip_in+'" avg precip';
 }
 
-// ── Scroll to sources ─────────────────────────────────────────────────────────
 function scrollToSources(){
   var el=document.getElementById("sources-block-"+STATE.activeTab);
   if(el)el.scrollIntoView({behavior:"smooth",block:"start"});
 }
 
-// ── Sticky bar update ─────────────────────────────────────────────────────────
 function updateStickyBar(){
   var node=null;
   for(var i=0;i<STATE.nodes.length;i++){if(STATE.nodes[i].id===STATE.activeTab){node=STATE.nodes[i];break;}}
@@ -489,7 +482,6 @@ function updateStickyBar(){
   }).join("");
 }
 
-// ── Enhanced Sources Block ────────────────────────────────────────────────────
 function srcRowD(ok,to,pend,label,detail){
   var c=ok?"dot-ok":to?"dot-timeout":pend?"dot-pend":"dot-fail";
   return'<div class="source-row"><span class="dot '+c+'" style="margin-top:3px"></span><span class="source-label">'+label+'</span><span class="src-detail">'+detail+'</span></div>';
@@ -565,7 +557,6 @@ function buildSourcesHTML(node){
   return html;
 }
 
-// ── Charts ────────────────────────────────────────────────────────────────────
 function spark(values,opts){
   var w=opts.w||340,h=opts.h||80,color=opts.color||"var(--accent)",fill=opts.fill||false,unit=opts.unit||"";
   var nums=values.map(function(v){return typeof v==="number"?v:null;});
@@ -611,13 +602,11 @@ function barChart(labels,highs,lows){
   return s;
 }
 
-// ── NWS wrappers — nwsGet uses fetchWTRetry (PATCH 3) ────────────────────────
 function nwsGet(url,ms){
   return fetchWTRetry(url,{headers:{"User-Agent":"(WeatherStation,contact@example.com)","Accept":"application/geo+json"},cache:"no-store"},ms||T_NWS_FC,2500)
     .then(function(r){if(!r.ok)throw new Error("NWS "+r.status);return r.json();});
 }
 
-// ── fetchNodeNWS — uses /points cache (PATCH 2) ───────────────────────────────
 function fetchNodeNWS(lat,lon){
   var cached=nwsPtsRead(lat,lon);
   var ptsP=cached
@@ -671,16 +660,13 @@ function fetchMPD(){return nwsGet("https://api.weather.gov/products/types/MPD/lo
 function fetchLSR(office){return nwsGet("https://api.weather.gov/products/types/LSR/locations/"+office,T_EXTRA).then(function(list){var id=list["@graph"]&&list["@graph"][0]?list["@graph"][0].id:null;if(!id)return null;return nwsGet("https://api.weather.gov/products/"+id,T_EXTRA).then(function(p){return{text:p.productText,issued:p.issuanceTime,office:office};});});}
 function fetchASOSPrecip(stationId){return nwsGet("https://api.weather.gov/stations/"+stationId+"/observations?limit=24",T_NWS_FC).then(function(data){var obs=(data.features||[]).map(function(f){var p=f.properties;return{timestamp:p.timestamp,precip_1hr_in:mmIn(p.precipitationLastHour?p.precipitationLastHour.value:null),precip_3hr_in:mmIn(p.precipitationLast3Hours?p.precipitationLast3Hours.value:null),precip_6hr_in:mmIn(p.precipitationLast6Hours?p.precipitationLast6Hours.value:null),sky:p.textDescription||null};}).filter(function(o){return o.precip_1hr_in!==null||o.precip_3hr_in!==null||o.precip_6hr_in!==null;});return{station:stationId,observations:obs};});}
 
-// ── Geocoding ─────────────────────────────────────────────────────────────────
 function resolveLocation(input){var el=document.getElementById("geocode-status");el.style.color="var(--dim)";el.textContent="Resolving…";var coordM=input.match(/^([+-]?\d{1,3}\.?\d*)[,\s\/]+([+-]?\d{1,3}\.?\d*)$/);if(coordM){var lat=parseFloat(coordM[1]),lon=parseFloat(coordM[2]);if(lat>=-90&&lat<=90&&lon>=-180&&lon<=180){el.style.color="var(--success)";el.textContent="✓ "+lat.toFixed(4)+", "+lon.toFixed(4);return fetchWT("https://nominatim.openstreetmap.org/reverse?format=json&lat="+lat+"&lon="+lon+"&zoom=12",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO).then(function(r){return r.json();}).then(function(d){var a=d.address||{};var lbl=[a.city||a.town||a.village||a.hamlet,a.state].filter(Boolean).join(", ")||lat.toFixed(4)+", "+lon.toFixed(4);el.textContent="✓ "+lbl;return{lat:lat,lon:lon,label:lbl};}).catch(function(){return{lat:lat,lon:lon,label:lat.toFixed(4)+", "+lon.toFixed(4)};});}}var q=input.match(/^\d{5}(-\d{4})?$/)?(input+", USA"):input;return fetchWT("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&countrycodes=us,ca,gb,au,nz,ie&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO).then(function(r){return r.json();}).then(function(results){if(!results.length)return fetchWT("https://nominatim.openstreetmap.org/search?format=json&q="+encodeURIComponent(q)+"&limit=1&addressdetails=1",{headers:{"User-Agent":"WeatherStation/1.0"}},T_GEO).then(function(r){return r.json();});return results;}).then(function(results){if(!results.length){el.style.color="var(--danger)";el.textContent="✗ Not found: "+input;return null;}var hit=results[0],lat=parseFloat(hit.lat),lon=parseFloat(hit.lon),a=hit.address||{};var lbl=(a.city||a.town||a.village||a.hamlet)?((a.city||a.town||a.village||a.hamlet)+", "+(a.state||a.country||"")):hit.display_name.split(",").slice(0,2).join(",").trim();el.style.color="var(--success)";el.textContent="✓ "+lbl+" ("+lat.toFixed(4)+", "+lon.toFixed(4)+")";return{lat:lat,lon:lon,label:lbl};}).catch(function(e){el.style.color="var(--danger)";el.textContent="✗ Error: "+e.message;return null;});}
 
-// ── Node management ───────────────────────────────────────────────────────────
 function newNode(id,label,lat,lon,role){return{id:id,label:label,lat:lat,lon:lon,role:role,nws:null,uv:null,climate:null,gridpoint:null,aq:null,ero:null,mpd:null,lsr:null,asosPrecip:null,hwo:null,ecmwf:null,ensemble:null,errors:[],timeouts:[],status:"idle"};}
 function addNode(){var input=document.getElementById("input-location").value.trim();if(!input)return;var role=document.getElementById("input-role").value;resolveLocation(input).then(function(loc){if(!loc)return;var id="n"+(STATE.nextId++);STATE.nodes.push(newNode(id,loc.label,loc.lat,loc.lon,role));document.getElementById("input-location").value="";renderNodeList();renderTabs();fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);});}
 function removeNode(id){STATE.nodes=STATE.nodes.filter(function(n){return n.id!==id;});if(STATE.activeTab===id)STATE.activeTab=STATE.nodes[0]?STATE.nodes[0].id:"";renderNodeList();renderTabs();renderActivePanel();}
 function addPreset(i){var p=PRESETS[i];if(STATE.nodes.some(function(n){return Math.abs(n.lat-p.lat)<0.01&&Math.abs(n.lon-p.lon)<0.01;})){return;}var id="n"+(STATE.nextId++);STATE.nodes.push(newNode(id,p.label,p.lat,p.lon,p.role));renderNodeList();renderTabs();fetchSingleNode(STATE.nodes[STATE.nodes.length-1]);}
 
-// ── Fetch orchestration ───────────────────────────────────────────────────────
 function fetchSingleNode(node){
   node.status="loading";node.errors=[];node.timeouts=[];
   node.gridpoint=null;node.aq=null;node.hwo=null;node.ero=null;node.mpd=null;node.lsr=null;node.asosPrecip=null;node.ecmwf=null;node.ensemble=null;
@@ -706,7 +692,6 @@ function fetchSingleNode(node){
   });
 }
 
-// ── PATCH 4: Stagger multi-node NWS 350ms per node ───────────────────────────
 function fetchAllNodes(){
   var btn=document.getElementById("refresh-btn");btn.disabled=true;btn.textContent="Fetching…";
   document.getElementById("loading").style.display="block";
@@ -725,7 +710,6 @@ function fetchAllNodes(){
 }
 function updateActionBar(){updateStickyBar();}
 
-// ── Export ────────────────────────────────────────────────────────────────────
 function buildExportPayload(){
   var now=new Date();
   var nodes=STATE.nodes.map(function(node){
@@ -760,7 +744,6 @@ function flash(){var el=document.getElementById("sticky-copy-status");if(el){el.
 function showPreview(){document.getElementById("export-modal-content").textContent=getExportText();document.getElementById("export-modal").classList.add("open");}
 function closePreview(){document.getElementById("export-modal").classList.remove("open");}
 
-// ── Render Node List & Tabs ───────────────────────────────────────────────────
 function renderNodeList(){
   document.getElementById("node-list").innerHTML=STATE.nodes.map(function(n){
     var st=n.status==="loading"?'<span class="spinner"></span>':n.status==="ready"?'<span style="color:var(--success)">✓</span>':n.status==="error"?'<span style="color:var(--danger)">✗</span>':'—';
@@ -776,17 +759,14 @@ function renderTabs(){
 }
 function switchTab(id){STATE.activeTab=id;renderTabs();renderActivePanel();updateStickyBar();}
 
-// ── Pill helper ───────────────────────────────────────────────────────────────
 function pill(l,val,u,s){return'<div class="pill"><div class="label">'+l+'</div><div class="value">'+val+'<span class="unit">'+u+'</span></div>'+(s?'<div class="sub">'+s+'</div>':'')+'</div>';}
 
-// ── Main panel render ─────────────────────────────────────────────────────────
 function renderActivePanel(){
   var panel=document.getElementById("node-panels");
   var node=null;for(var i=0;i<STATE.nodes.length;i++){if(STATE.nodes[i].id===STATE.activeTab){node=STATE.nodes[i];break;}}
   if(!node){panel.innerHTML="";return;}
   var nws=node.nws,uv=node.uv,html="";
 
-  // PATCH 5: Errors with targeted NWS retry button
   if(node.errors.length){
     var hasNWSErr=node.errors.some(function(e){return e.indexOf("NWS")===0;});
     html+='<div class="errors">'+
@@ -928,7 +908,7 @@ function renderActivePanel(){
       qpfContent+='</tr>';
     });
     qpfContent+='</tbody></table><div style="font-size:10px;color:var(--dim);font-family:var(--mono);padding:6px 0 2px">NWS Gridpoint QPF · authoritative · same source as NWS hourly chart · UTC day boundaries</div></div>';
-    html+=buildCollapsible("qpf-"+node.id,"NWS Gridpoint QPF",'<span class="badge" style="background:#4ade8022;color:var(--success)">Authoritative</span><span class="meta" style="font-size:10px">'+esc(gp.source)+'</span>',qpfSummary(node),qpfContent);
+    html+=buildCollapsible("qpf-"+node.id,"NWS Gridpoint QPF",'<span class="badge" style="background:#3dd68c22;color:var(--success)">Authoritative</span><span class="meta" style="font-size:10px">'+esc(gp.source)+'</span>',qpfSummary(node),qpfContent);
   } else if(node.nws&&node.status==="ready"&&!node.gridpoint){
     html+='<div style="margin-top:8px;font-size:11px;color:var(--dim);font-family:var(--mono)">NWS QPF: unavailable or still loading</div>';
   }
@@ -966,7 +946,7 @@ function renderActivePanel(){
 
   if(node.asosPrecip){
     var aobs=node.asosPrecip.observations,asosContent="";
-    if(aobs.length){asosContent='<div style="overflow-x:auto"><table class="climate-table"><thead><tr><th style="text-align:left">Time</th><th>1hr</th><th>3hr</th><th>6hr</th><th style="text-align:left">Sky</th></tr></thead><tbody>';aobs.forEach(function(o){var hot=(o.precip_1hr_in>0||o.precip_3hr_in>0||o.precip_6hr_in>0);asosContent+='<tr'+(hot?' style="background:rgba(96,165,250,.06)"':'')+'><td style="text-align:left">'+ts(o.timestamp)+'</td><td style="color:'+(o.precip_1hr_in>0?"var(--accent)":"inherit")+'">'+(o.precip_1hr_in!=null?(o.precip_1hr_in>0?o.precip_1hr_in+'"':"trace"):"—")+'</td><td>'+(o.precip_3hr_in!=null?o.precip_3hr_in+'"':"—")+'</td><td>'+(o.precip_6hr_in!=null?o.precip_6hr_in+'"':"—")+'</td><td style="text-align:left;color:var(--dim)">'+esc(o.sky||"")+'</td></tr>';});asosContent+='</tbody></table></div>';}
+    if(aobs.length){asosContent='<div style="overflow-x:auto"><table class="climate-table"><thead><tr><th style="text-align:left">Time</th><th>1hr</th><th>3hr</th><th>6hr</th><th style="text-align:left">Sky</th></tr></thead><tbody>';aobs.forEach(function(o){var hot=(o.precip_1hr_in>0||o.precip_3hr_in>0||o.precip_6hr_in>0);asosContent+='<tr'+(hot?' style="background:rgba(91,156,246,.06)"':'')+'><td style="text-align:left">'+ts(o.timestamp)+'</td><td style="color:'+(o.precip_1hr_in>0?"var(--accent)":"inherit")+'">'+(o.precip_1hr_in!=null?(o.precip_1hr_in>0?o.precip_1hr_in+'"':"trace"):"—")+'</td><td>'+(o.precip_3hr_in!=null?o.precip_3hr_in+'"':"—")+'</td><td>'+(o.precip_6hr_in!=null?o.precip_6hr_in+'"':"—")+'</td><td style="text-align:left;color:var(--dim)">'+esc(o.sky||"")+'</td></tr>';});asosContent+='</tbody></table></div>';}
     else{asosContent='<div style="font-size:12px;color:var(--dim);font-family:var(--mono)">No precip in last 24 obs.</div>';}
     html+=buildCollapsible("asos-"+node.id,"ASOS Precip",'<span class="badge badge-fresh">'+aobs.length+' obs</span><span class="meta" style="font-size:10px">'+esc(node.asosPrecip.station)+'</span>',(aobs.length+" obs · "+node.asosPrecip.station),asosContent);
   }
@@ -1010,12 +990,10 @@ function renderActivePanel(){
   panel.innerHTML=html;
 }
 
-// ── PATCH 6: Targeted NWS-only retry ─────────────────────────────────────────
 function retryNWS(nodeId){
   var node=null;
   for(var i=0;i<STATE.nodes.length;i++){if(STATE.nodes[i].id===nodeId){node=STATE.nodes[i];break;}}
   if(!node)return;
-  // Clear only NWS-dependent state; preserve OM/ERA5 which already loaded
   node.nws=null;node.gridpoint=null;
   node.errors=node.errors.filter(function(e){return e.indexOf("NWS")!==0;});
   node.status="loading";
@@ -1035,7 +1013,6 @@ function retryNWS(nodeId){
   });
 }
 
-// ── Init ──────────────────────────────────────────────────────────────────────
 document.getElementById("input-location").addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();addNode();}});
 document.getElementById("presets").innerHTML=PRESETS.map(function(p,i){return'<button class="preset-btn" onclick="addPreset('+i+')">'+esc(p.label)+'</button>';}).join("");
 updateSettingsSummary();
